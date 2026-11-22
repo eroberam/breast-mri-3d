@@ -150,14 +150,16 @@ def allocate_ispy(rows: list[dict], sums: dict[str, str], known: set[str], limit
             for patient in selected]
 
 
-def acquire_ispy(root: Path, legacy: Path, *, limit: int = 120, seed: int = 19, workers: int = 8) -> Path:
+def acquire_ispy(root: Path, legacy: Path | None = None, *, limit: int = 120, seed: int = 19, workers: int = 8) -> Path:
     meta = root / "acquisition"
     raw = root / "raw" / "ISPY1-STV"
     base = f"{ISPY_MIRROR}/{ISPY_REVISION}"
     checksums = download(f"{base}/{ISPY_SUMS}", meta / ISPY_SUMS)
     upstream = download(f"{base}/train.jsonl", meta / "ispy1-upstream.jsonl")
     rows = [json.loads(line) for line in upstream.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
-    known = {row["patient"] for row in json.loads(legacy.read_text(encoding="utf-8-sig"))["cases"]}
+    known = set()
+    if legacy is not None:
+        known = {row["patient"] for row in json.loads(legacy.read_text(encoding="utf-8-sig"))["cases"]}
     cases = allocate_ispy(rows, read_md5_manifest(checksums), known, limit, seed)
     locked = meta / "ispy1-stv-selection.json"
     planned = {"dataset": ISPY_ACCESSION, "revision": ISPY_REVISION, "seed": seed,

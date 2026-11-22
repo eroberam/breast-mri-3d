@@ -229,7 +229,7 @@ def main() -> None:
     parser.add_argument("root", type=Path, help="Local storage for study files and run artifacts")
     commands = parser.add_subparsers(dest="command", required=True)
     fetch = commands.add_parser("acquire-ispy1")
-    fetch.add_argument("--legacy", required=True, type=Path)
+    fetch.add_argument("--legacy", type=Path, help="optional local manifest of previous pilot patients")
     fetch.add_argument("--limit", type=int, default=120)
     fetch.add_argument("--seed", type=int, default=19)
     fetch.add_argument("--workers", type=int, default=8)

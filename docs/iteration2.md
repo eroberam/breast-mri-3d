@@ -1,6 +1,6 @@
 # Expert-contour experiment
 
-The compact network is trained from a random initialization. The comparison uses an official nnU-Net v2 3D full-resolution network and a shared, fixed patient partition. The experiment separates the legacy derived functional masks, the expert development endpoints and the locked external cohort. [Legacy pilot](pilot.md)
+The compact network is trained from a random initialization. The comparison uses an official nnU-Net v2 3D full-resolution network and a shared, fixed patient partition. The expert development endpoints and the locked external cohort have separate manifests.
 
 ## Data preparation
 
@@ -9,8 +9,7 @@ Use a private data root outside the checkout. The optional data dependencies pro
 ```bash
 python -m pip install -e '.[data,dev]'
 DATA=/path/to/private-data
-LEGACY=/path/to/local/pilot/manifest.json
-python -m breast_mri3d.iteration2 "$DATA" acquire-ispy1 --legacy "$LEGACY" --limit 120 --seed 19
+python -m breast_mri3d.iteration2 "$DATA" acquire-ispy1 --limit 120 --seed 19
 python -m breast_mri3d.iteration2 "$DATA" prepare-stv
 python -m breast_mri3d.iteration2 "$DATA" prepare-envelopes --limit 60
 python -m breast_mri3d.iteration2 "$DATA" prepare-mama --token-file /path/to/local-synapse-token
@@ -20,7 +19,7 @@ python -m breast_mri3d.iteration2 "$DATA" acquire-ambl --local-dce /path/to/Brea
 python -m breast_mri3d.iteration2 "$DATA" acquire-ambl-mr
 ```
 
-- I-SPY1 uses baseline structural tumor volume (STV) references matched to the documented phase pair and checked against the TCIA checksums. The seed-19 allocation keeps legacy pilot patients in development training when they recur. [TCIA expert contours](https://www.cancerimagingarchive.net/analysis-result/ispy1-tumor-seg-radiomics/)
+- I-SPY1 uses baseline structural tumor volume (STV) references matched to the documented phase pair and checked against the TCIA checksums. Use `--legacy` with the local manifest of any earlier pilot to keep those patients in training. The original pilot manifest is local to the research laboratory, so an independent split can differ when that option is omitted. [TCIA expert contours](https://www.cancerimagingarchive.net/analysis-result/ispy1-tumor-seg-radiomics/)
 - The MAMA-MIA subset includes Duke and I-SPY2 expert-reviewed primary tumor contours. MAMA-MIAAI contributes whole-breast envelopes after an exact companion-image grid check. The combined manifest aligns overlapping patients to their established split. [MAMA-MIA](https://doi.org/10.7303/syn60868042) · [MAMA-MIAAI](https://physionet.org/content/mama-miaai-herewegoagain/1.0.0/)
 - ODELIA uses lesion code zero on both sides in provider training and validation. It downloads only precontrast and the first documented postcontrast volume. EA1141 has separate patient splits. It requires baseline MRI BI-RADS 1, the recorded absence of lesions, no cancer during follow-up and explicitly identified DCE phases. [ODELIA methods](https://arxiv.org/abs/2506.00474) · [EA1141](https://www.cancerimagingarchive.net/collection/ea1141/)
 - AMBL v3 is hashed before fitting. Its unitless NIfTI files establish shared array indices. Scanner-space assessment requires full voxel equality of both releases after a unique permutation and flip to a documented DICOM pair. Its lesion endpoint includes all reported lesions and the contours combine manual annotation with enhancement thresholding. [AMBL release](https://zenodo.org/records/17253223) · [AMBL methods](https://arxiv.org/html/2509.26440v2)
