@@ -70,3 +70,43 @@ def test_diagonal_voxel_contacts_produce_a_closed_print_surface():
     assert mesh.is_volume
     assert mesh.metadata["isovalue"] == .50001
     assert np.array_equal(mask, original)
+
+
+def test_duke_nrrd_retains_lps_axes_and_rejects_fractional_voxel_shifts():
+    pytest.importorskip("nrrd")
+    pytest.importorskip("idc_index")
+    from breast_mri3d.duke import compatible_lattice, nrrd_grid
+
+    header = {"space": "left-posterior-superior", "dimension": 3, "sizes": [8, 7, 6],
+              "space directions": np.diag([-.7, -.8, 2.]),
+              "space origin": [23., 40., -70.]}
+    grid = nrrd_grid(header)
+    assert grid.shape == (6, 7, 8)
+    assert np.allclose(grid.points([[1, 2, 3]])[0], [20.9, 38.4, -68.])
+    assert compatible_lattice(grid, grid)
+    shifted = grid.affine.copy()
+    shifted[0, 3] += .2
+    assert not compatible_lattice(Grid(grid.shape, shifted), grid)
+
+
+def test_duke_slicer_layers_preserve_separate_annotations(tmp_path):
+    nrrd = pytest.importorskip("nrrd")
+    pytest.importorskip("idc_index")
+    from breast_mri3d.duke import reference_masks
+
+    volumes = np.zeros((2, 3, 2, 4), dtype=np.uint8)
+    volumes[0, 1, 0, 2] = 2
+    volumes[1, 0, 1, 0] = 1
+    header = {
+        "space": "left-posterior-superior", "kinds": ["list", "domain", "domain", "domain"],
+        "space directions": np.vstack([[np.nan] * 3, np.diag([-.7, -.8, 2.])]),
+        "space origin": [23., 40., -70.],
+        "Segment0_Name": "Vessels", "Segment0_Layer": "0", "Segment0_LabelValue": "2",
+        "Segment1_Name": "Dense", "Segment1_Layer": "1", "Segment1_LabelValue": "1",
+    }
+    source = tmp_path / "layered.seg.nrrd"
+    nrrd.write(str(source), volumes, header=header, index_order="F")
+    masks, grid = reference_masks(source, {"Vessels": "vessels", "Dense": "fibroglandular"})
+    assert grid.shape == (4, 2, 3)
+    assert np.argwhere(masks["vessels"]).tolist() == [[2, 0, 1]]
+    assert np.argwhere(masks["fibroglandular"]).tolist() == [[0, 1, 0]]

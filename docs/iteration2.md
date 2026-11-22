@@ -21,6 +21,7 @@ python -m breast_mri3d.iteration2 "$DATA" acquire-ambl-mr
 
 - I-SPY1 uses baseline structural tumor volume (STV) references matched to the documented phase pair and checked against the TCIA checksums. Use `--legacy` with the local manifest of any earlier pilot to keep those patients in training. The original pilot manifest is local to the research laboratory, so an independent split can differ when that option is omitted. [TCIA expert contours](https://www.cancerimagingarchive.net/analysis-result/ispy1-tumor-seg-radiomics/)
 - The MAMA-MIA subset includes Duke and I-SPY2 expert-reviewed primary tumor contours. MAMA-MIAAI contributes whole-breast envelopes after an exact companion-image grid check. The combined manifest aligns overlapping patients to their established split. [MAMA-MIA](https://doi.org/10.7303/syn60868042) · [MAMA-MIAAI](https://physionet.org/content/mama-miaai-herewegoagain/1.0.0/)
+- The Duke 3D supplemental release contains whole-breast, fibroglandular and vascular annotations. Download the TCIA **3D Breast and FGT MRI Segmentations** NRRD package under `raw/Duke3D/supplement`. The adapter retrieves the documented original phase pairs, verifies that the Slicer segmentations occupy the same physical lattice as precontrast, and checks tissue coverage in early postcontrast. [Duke segmentation study](https://doi.org/10.1038/s41598-024-54048-2) · [TCIA supplemental downloads](https://www.cancerimagingarchive.net/collection/duke-breast-cancer-mri/)
 - ODELIA uses lesion code zero on both sides in provider training and validation. It downloads only precontrast and the first documented postcontrast volume. EA1141 has separate patient splits. It requires baseline MRI BI-RADS 1, the recorded absence of lesions, no cancer during follow-up and explicitly identified DCE phases. [ODELIA methods](https://arxiv.org/abs/2506.00474) · [EA1141](https://www.cancerimagingarchive.net/collection/ea1141/)
 - AMBL v3 is hashed before fitting. Its unitless NIfTI files establish shared array indices. Scanner-space assessment requires full voxel equality of both releases after a unique permutation and flip to a documented DICOM pair. Its lesion endpoint includes all reported lesions and the contours combine manual annotation with enhancement thresholding. [AMBL release](https://zenodo.org/records/17253223) · [AMBL methods](https://arxiv.org/html/2509.26440v2)
 
@@ -36,6 +37,8 @@ python -m breast_mri3d.iteration2 "$DATA" combine-development --out "$P/v02-cali
 ```
 
 ## Fitting and ablations
+
+To add Duke 3D anatomy, run `python -m breast_mri3d.duke "$DATA" --limit 100` once the NRRD files and the combined anatomy manifest are available. The adapter's `v02-anatomy-dev-with-duke.json` can replace the anatomy manifest in C1 and teacher calibration. It preserves the fixed tumor split and uses the Duke annotations for overlapping envelope patients.
 
 The initial ceiling is 2,700 seconds per GPU arm after setup. The custom model stops after the first update that hits the budget. The nnU-Net trainer concludes its current validation hooks and writes the final checkpoint. Both log elapsed time, updates and peak allocated CUDA memory. Planning, threshold calibration and teacher inference are timed separately. The comparison uses one GPU process at a time, the same lesion-training cases and seed 19.
 

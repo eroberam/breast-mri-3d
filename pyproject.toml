@@ -22,7 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 train = ["torch>=2.6,<3"]
-data = ["huggingface_hub>=0.34,<3", "synapseclient>=4,<5", "pyarrow>=17,<25", "idc-index>=0.13,<0.14"]
+data = ["huggingface_hub>=0.34,<3", "synapseclient>=4,<5", "pyarrow>=17,<25", "idc-index>=0.13,<0.14", "pynrrd>=1.1,<2"]
 dev = ["pytest>=8,<10"]
 
 [project.scripts]
