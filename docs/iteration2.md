@@ -67,6 +67,16 @@ python -m breast_mri3d.experiment envelope-teacher "$P/v02-anatomy-dev.json" "$R
 
 C1 adds manual whole-breast supervision with a partial-label loss. If the teacher eligibility report passes, C2 repeats C1 with the same initialization protocol and adds `--teachers`. The locally trained teacher's envelope probabilities are temperature-calibrated on manual validation references. Its cache records the training partition, checkpoint digest, confidence boundaries and physical grid. Published teachers require an independently verified training-patient list and structure-specific calibration before use.
 
+For an exploratory C2 evaluation after the primary model lock, use the anatomical partition employed for C1. Setting `--minimum-dice 0` evaluates the effect of confidence-filtered targets with the usual temperature calibration and probability tails of 0.1 and 0.9. Use development validation for this ablation.
+
+```bash
+ANATOMY_MANIFEST="$P/v02-anatomy-dev-with-duke.json"
+python -m breast_mri3d.experiment envelope-teacher "$ANATOMY_MANIFEST" "$RUN/c1-anatomy.pt" \
+  --minimum-dice 0 --out "$RUN/c2-exploratory-envelope-calibration.json"
+breast-mri-3d train "$ANATOMY_MANIFEST" --seed 19 --steps 1000000 --budget-seconds 2700 \
+  --width 12 --patch 24 96 96 --teachers --out "$RUN/c2-exploratory.pt"
+```
+
 C3 depends on verified cross-fitted proposal pairs. Generate negatives with the other two training folds, then call `match-proposals` with `--max-volume-ratio 2 --max-enhancement-gap 0.5`. Use the same documented protocol on both sides of each pair. Train C3 by adding `--pairs` to C2 when the candidate ledger contains approved pairs. See [candidate and teacher rules](validation.md).
 
 ## Validation, lock and external scoring
@@ -85,6 +95,25 @@ nnUNetv2_predict -i "$RUN/ambl-input" -o "$RUN/nnunet-ambl" -d 75 -tr V02BudgetT
   -c 3d_fullres -f 0 -chk checkpoint_final.pth -npp 2 -nps 2
 breast-mri-3d score-nnunet "$P/AMBL/manifest.json" "$RUN/nnunet-ambl" --split test --prediction-input \
   --out "$RUN/nnunet-ambl.json"
+```
+
+If multiprocessing is unavailable, use the official sequential predictor with the same checkpoint, input and output paths. Run this command before scoring.
+
+```bash
+python - "$RUN/ambl-input" "$RUN/nnunet-ambl" "$REF/checkpoint_final.pth" <<'PY'
+from pathlib import Path
+import sys
+import torch
+from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+
+inputs, outputs, checkpoint = map(Path, sys.argv[1:])
+outputs.mkdir(parents=True, exist_ok=True)
+predictor = nnUNetPredictor(tile_step_size=0.5, use_gaussian=True, use_mirroring=True,
+                            perform_everything_on_device=True, device=torch.device("cuda"))
+predictor.initialize_from_trained_model_folder(str(checkpoint.parent.parent),
+                                               use_folds=(0,), checkpoint_name=checkpoint.name)
+predictor.predict_from_files_sequential(str(inputs), str(outputs), overwrite=False)
+PY
 ```
 
 Run `breast-mri-3d evaluate` on the same manifest and locked compact checkpoint with `--split test`, the locked `--threshold` and, if selected, `--rank-threshold`. Then use `python -m breast_mri3d.experiment compare REFERENCE_JSON PROPOSED_JSON --out PAIRED_JSON`. The report pairs patients before bootstrapping. Surface distance is reported only when both rows have a measurable HD95. Small lesions use a 10 mm equivalent-sphere diameter. Primary-tumor references count each annotated tumor once, including when its mask is discontinuous. AMBL lesion matching retains the release's individual identifiers on the verified DICOM grid. Negative false alarms are counted only where absence or exhaustive annotation is documented.

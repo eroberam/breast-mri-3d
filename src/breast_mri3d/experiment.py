@@ -175,6 +175,9 @@ def main() -> None:
         task.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
         task.add_argument("--patch", type=int, nargs=3, default=(32, 128, 128))
         task.add_argument("--out", type=Path, required=True)
+        if name == "envelope-teacher":
+            task.add_argument("--minimum-dice", type=float, default=.8,
+                              help="minimum validation envelope Dice for caching teacher targets")
     lock = commands.add_parser("lock-external")
     for path in ("root", "compact", "calibration", "reference"):
         lock.add_argument(path, type=Path)
@@ -190,7 +193,7 @@ def main() -> None:
         from .teacher import cache_envelope_teacher
 
         result = cache_envelope_teacher(args.manifest, args.checkpoint, args.out, device_name=args.device,
-                                        patch=tuple(args.patch))
+                                        minimum_dice=args.minimum_dice, patch=tuple(args.patch))
     elif args.command == "lock-external":
         lock_external(args.root, args.compact, args.calibration, args.reference, args.out)
         result = {"lock": str(args.out)}

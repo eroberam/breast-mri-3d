@@ -16,6 +16,9 @@ from .research import read_manifest
 
 def cache_envelope_teacher(manifest: Path, checkpoint: Path, output: Path, *, device_name: str = "cuda",
                            minimum_dice: float = .8, patch: tuple[int, int, int] = (32, 128, 128)) -> dict:
+    if not 0. <= minimum_dice <= 1.:
+        raise ValueError("The minimum envelope Dice must be between zero and one.")
+
     import torch
 
     from .inference import open_model, predict, structure_probability
@@ -86,6 +89,7 @@ def cache_envelope_teacher(manifest: Path, checkpoint: Path, output: Path, *, de
             trusted_voxels += int(trusted.sum())
             if emitted % 10 == 0:
                 print(f"Calibrated envelope probabilities cached for {emitted} development cases", flush=True)
-    result = {**details, "emitted_training_cases": emitted, "trusted_voxels": trusted_voxels}
+    result = {**details, "minimum_dice": minimum_dice,
+              "emitted_training_cases": emitted, "trusted_voxels": trusted_voxels}
     write_json(output, result)
     return result
