@@ -35,7 +35,7 @@ def surface(mask: np.ndarray, grid: Grid) -> trimesh.Trimesh | None:
     raise ValueError("A mask produced a surface that is not closed with outward normals.")
 
 
-_PRINT_PRIORITY = ("lesion", "fibroglandular", "left_breast", "right_breast", ENVELOPE)
+_PRINT_PRIORITY = ("lesion", "vessels", "fibroglandular", "left_breast", "right_breast", ENVELOPE)
 
 
 def printable_masks(masks: dict[str, np.ndarray]) -> dict[str, np.ndarray]:

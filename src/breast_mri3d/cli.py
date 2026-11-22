@@ -195,7 +195,7 @@ def _segment(args: argparse.Namespace) -> None:
     if args.rank_threshold is not None and not summary["verified_ranking_pairs"]:
         raise ValueError("The requested checkpoint was not trained with verified ranking pairs.")
     probs, rank = predict(model, inputs, tuple(args.patch), device, ranking=args.rank_threshold is not None)
-    labels = [label for label in summary["supervised_labels"] if label != "vessels"]
+    labels = summary["supervised_labels"]
     mask = binary_masks(probs, labels, args.threshold, ranking=rank, rank_threshold=args.rank_threshold)
     path = export_case(args.out, post, mask, mask_grid=grid, origin={
         "type": "research_model", "checkpoint_sha256": hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),

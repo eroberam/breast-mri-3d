@@ -5,7 +5,7 @@ from breast_mri3d.acquire import allocate_ispy, safe_relative
 from breast_mri3d.experiment import paired_intervals
 from breast_mri3d.geometry import Grid
 from breast_mri3d.iteration2 import require_coverage
-from breast_mri3d.mesh import surface
+from breast_mri3d.mesh import printable_masks, surface
 
 
 def test_expert_allocation_keeps_pilot_patients_in_training():
@@ -110,3 +110,15 @@ def test_duke_slicer_layers_preserve_separate_annotations(tmp_path):
     assert grid.shape == (4, 2, 3)
     assert np.argwhere(masks["vessels"]).tolist() == [[2, 0, 1]]
     assert np.argwhere(masks["fibroglandular"]).tolist() == [[0, 1, 0]]
+
+
+def test_print_partition_keeps_vessels_as_an_aligned_part():
+    lesion = np.zeros((3, 3, 3), dtype=bool)
+    lesion[0, 0, 0] = True
+    vessels = lesion.copy()
+    vessels[1, 1, 1] = True
+    envelope = np.ones_like(lesion)
+    parts = printable_masks({"lesion": lesion, "vessels": vessels, "breast_envelope": envelope})
+    assert np.argwhere(parts["vessels"]).tolist() == [[1, 1, 1]]
+    assert sum(int(mask.sum()) for mask in parts.values()) == envelope.size
+    assert int(vessels.sum()) == 2
