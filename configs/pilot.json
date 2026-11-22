@@ -1,0 +1,12 @@
+{
+  "name": "ispy1-supervised-pilot",
+  "scope": "development_only_derived_i_spy1_references",
+  "width": 12,
+  "patch_zyx": [24, 96, 96],
+  "steps": 480,
+  "seed": 19,
+  "device": "cuda",
+  "supervision": ["lesion"],
+  "teachers": false,
+  "ranking": false
+}

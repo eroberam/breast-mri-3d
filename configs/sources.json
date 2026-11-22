@@ -1,0 +1,60 @@
+{
+  "MAMA-MIA": {
+    "role": "development with expert-reviewed primary tumor masks",
+    "collection": "https://doi.org/10.7303/syn60868042",
+    "metadata_entity": "syn64854989",
+    "images_entity": "syn64871114",
+    "segmentations_entity": "syn64871173",
+    "expert_masks_entity": "syn64871175",
+    "access": "Synapse authentication and data-use conditions",
+    "benchmark": "https://mama-research.github.io/index.html"
+  },
+  "Duke 3D": {
+    "role": "manual anatomy and vessel annotations, mapped to original patient identifiers",
+    "collection": "https://www.cancerimagingarchive.net/collection/duke-breast-cancer-mri/",
+    "reference": "https://doi.org/10.1038/s41598-024-54048-2",
+    "access": "TCIA research-use license on the supplemental segmentation distribution"
+  },
+  "I-SPY1": {
+    "role": "pilot DICOM reference and patient-linked derived functional masks",
+    "collection": "https://www.cancerimagingarchive.net/collection/ispy1/",
+    "expert_structural_extension": "https://www.cancerimagingarchive.net/analysis-result/ispy1-tumor-seg-radiomics/",
+    "selective_mirror": "https://huggingface.co/datasets/MedOtter/ISPY1-Tumor-SEG-Radiomics/tree/dd4bbffd69294daab3bfdc1999625313578f4c2c",
+    "identity_note": "Map each appearance of the same patient to one partition across I-SPY1, MAMA-MIA and derived annotation releases."
+  },
+  "MAMA-MIAAI": {
+    "role": "manual whole-breast envelope references, overlapping MAMA-MIA patient identifiers",
+    "collection": "https://physionet.org/content/mama-miaai-herewegoagain/1.0.0/",
+    "files": "https://physionet.org/files/mama-miaai-herewegoagain/1.0.0/BreastSegmentation/expert/",
+    "access": "PhysioNet published terms; check recorded license before redistribution"
+  },
+  "ODELIA": {
+    "role": "official development and reserved case-level partitions; select both-breast lesion-free studies for negative exams",
+    "collection": "https://huggingface.co/datasets/ODELIA-AI/ODELIA-Challenge-2025",
+    "access": "Hugging Face gate and provider's research/educational terms",
+    "release_tested": "fa6cd09bd639ff8e1e459853d19ba88aa20e1e07"
+  },
+  "EA1141": {
+    "role": "clinical and imaging-confirmed bilateral negatives with independent patient splits",
+    "collection": "https://www.cancerimagingarchive.net/collection/ea1141/",
+    "source_mirror": "https://portal.imaging.datacommons.cancer.gov/collections/ea1141/"
+  },
+  "AMBL": {
+    "role": "reserved external benchmark; match physical DICOM and complete reference coverage before scoring",
+    "collection": "https://www.cancerimagingarchive.net/collection/advanced-mri-breast-lesions/",
+    "derived_labels": "https://zenodo.org/records/17253223",
+    "derived_labels_md5": "14d77cdc88cb702ff5f46fdc94a9a291",
+    "dce_v3_md5": "778b0f8eb33e69d0a2c3d39b470be1e4",
+    "physical_reference": "Source DICOM pairs verified by voxel equality and exact reorientation"
+  },
+  "BreastDM": {
+    "role": "reserved external benchmark; physical measures require verified spacing",
+    "collection": "https://github.com/smallboy-code/Breast-cancer-dataset",
+    "reference": "https://doi.org/10.1016/j.compbiomed.2023.107255"
+  },
+  "Normal FGT": {
+    "role": "possible weak anatomical or breast-side covariates, requiring endpoint and geometry checks",
+    "collection": "https://zenodo.org/records/14921217",
+    "annotation_note": "Verify the annotated side and annotation level. A side-level record cannot supervise a voxelwise FGT mask."
+  }
+}

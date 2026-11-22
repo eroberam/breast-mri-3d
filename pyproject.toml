@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "breast-mri-3d"
+version = "0.2.0"
+description = "Research pipeline for volumetric breast MRI segmentation and geometry-checked export"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+  "numpy>=1.26,<3",
+  "scipy>=1.11,<2",
+  "pydicom>=3,<4",
+  "highdicom>=0.29,<0.30",
+  "nibabel>=5.2,<6",
+  "scikit-image>=0.24,<1",
+  "trimesh>=4.6,<6",
+  "lib3mf>=2.5,<3",
+]
+
+[project.optional-dependencies]
+train = ["torch>=2.6,<3"]
+data = ["huggingface_hub>=0.34,<3", "synapseclient>=4,<5", "pyarrow>=17,<25", "idc-index>=0.13,<0.14"]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+breast-mri-3d = "breast_mri3d.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/breast_mri3d"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
