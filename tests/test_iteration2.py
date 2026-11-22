@@ -6,6 +6,7 @@ from breast_mri3d.experiment import paired_intervals
 from breast_mri3d.geometry import Grid
 from breast_mri3d.iteration2 import require_coverage
 from breast_mri3d.mesh import printable_masks, surface
+from breast_mri3d.research import match_lesions
 
 
 def test_expert_allocation_keeps_pilot_patients_in_training():
@@ -122,3 +123,36 @@ def test_print_partition_keeps_vessels_as_an_aligned_part():
     assert np.argwhere(parts["vessels"]).tolist() == [[1, 1, 1]]
     assert sum(int(mask.sum()) for mask in parts.values()) == envelope.size
     assert int(vessels.sum()) == 2
+
+
+def test_native_nearest_projection_preserves_calibration_thresholds():
+    model = Grid((4, 6, 8), np.diag([2., 1.2, .9, 1.]))
+    affine = np.array([[1.3, .1, 0., -1.2], [0., .8, .2, .3], [0., 0., .7, -.4], [0., 0., 0., 1.]])
+    native = Grid((7, 8, 9), affine)
+    scores = np.linspace(0, 1, np.prod(model.shape), dtype=np.float32).reshape(model.shape)
+    projected = model.resample(scores, native, order=0)
+    for value in (.2, .3, .4, .5, .6, .7, .8, .9):
+        expected = model.resample((scores >= value).astype(np.uint8), native, order=0).astype(bool)
+        assert np.array_equal(projected >= value, expected)
+
+
+def test_primary_tumor_fragments_count_as_one_named_lesion():
+    grid = Grid((5, 5, 5), np.eye(4))
+    mask = np.zeros(grid.shape, dtype=np.uint8)
+    mask[0, 0, 0] = 1
+    mask[4, 4, 4] = 1
+    detection = match_lesions(mask, mask, grid=grid, instances=mask)
+    assert detection["small_lesions"] == 1
+    assert detection["small_matched"] == 1
+
+
+def test_touching_ambl_labels_remain_distinct_lesions():
+    grid = Grid((3, 3, 3), np.eye(4))
+    labels = np.zeros(grid.shape, dtype=np.uint8)
+    labels[1, 1, 1] = 2
+    labels[1, 1, 2] = 5
+    mask = labels > 0
+    detection = match_lesions(mask, mask, grid=grid, instances=labels)
+    assert detection["small_lesions"] == 2
+    assert detection["small_matched"] == 1
+    assert detection["missed"] == 1

@@ -21,7 +21,7 @@ def tune_threshold(manifest: Path, checkpoint: Path, output: Path, *, device_nam
 
     from .geometry import Grid
     from .imaging import read_nifti
-    from .inference import binary_masks, open_model, predict
+    from .inference import binary_masks, open_model, predict, structure_probability
     from .research import read_manifest
 
     cases = [case for case in read_manifest(manifest) if case.split == "validation"
@@ -46,14 +46,22 @@ def tune_threshold(manifest: Path, checkpoint: Path, output: Path, *, device_nam
                 or not np.isin(target, (0, 1)).all()):
             raise ValueError("Threshold selection requires a binary reference on its recorded physical grid.")
         target = target.astype(bool)
+        target_count = int(target.sum())
         positive = case.metadata["labels"]["lesion"] == "manual"
+        model_grid = case.grid
+        # Nearest-neighbour projection selects the same voxel before or after
+        # thresholding. Outside the source, zero is background at every threshold.
+        native_probability = model_grid.resample(structure_probability(probability, "lesion"), native, order=0)
         for prob_threshold, rank_threshold in settings:
-            prediction = binary_masks(probability, ["lesion"], prob_threshold, ranking=ranking,
-                                      rank_threshold=rank_threshold)["lesion"]
-            aligned = case.grid.resample(prediction.astype(np.uint8), native, order=0).astype(bool)
+            if rank_threshold is None:
+                aligned = native_probability >= prob_threshold
+            else:
+                prediction = binary_masks(probability, ["lesion"], prob_threshold, ranking=ranking,
+                                          rank_threshold=rank_threshold)["lesion"]
+                aligned = model_grid.resample(prediction.astype(np.uint8), native, order=0).astype(bool)
             current = values[prob_threshold, rank_threshold]
             if positive:
-                denominator = int(aligned.sum()) + int(target.sum())
+                denominator = int(aligned.sum()) + target_count
                 current["positive"].append(float(2 * (aligned & target).sum() / denominator) if denominator else 0.)
             else:
                 current["negative"].append(int(ndimage.label(aligned)[1]))

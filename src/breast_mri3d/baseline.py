@@ -11,7 +11,7 @@ import numpy as np
 from .geometry import Grid
 from .imaging import read_nifti, write_nifti
 from .labels import LABELS
-from .research import Case, mask_metrics, match_lesions, read_manifest, summarize_metrics
+from .research import Case, lesion_instances, mask_metrics, match_lesions, read_manifest, summarize_metrics
 
 
 def _write_images(directory: Path, key: str, case: Case, grid: Grid) -> None:
@@ -104,7 +104,8 @@ def score_nnunet(manifest: Path, predictions: Path, output: Path, *, split: str 
                   "grid": "native_" + metadata["reference"].get("type", "dicom"),
                   **mask_metrics(aligned, target, native)}
         if provenance in {"manual", "confirmed_empty"} or metadata["reference"].get("assisted_manual"):
-            lesions = match_lesions(aligned, target, grid=native)
+            instances = lesion_instances(case, target, native, metadata["reference"])
+            lesions = match_lesions(aligned, target, grid=native, instances=instances)
             if provenance != "confirmed_empty" and not metadata.get("lesion_annotations_exhaustive", False):
                 lesions.pop("false_alarms")
             record.update(lesions)

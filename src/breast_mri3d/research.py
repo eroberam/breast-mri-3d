@@ -62,12 +62,24 @@ def read_manifest(path: Path) -> list[Case]:
 
 
 def match_lesions(prediction: np.ndarray, reference: np.ndarray, *, iou_threshold: float = .1,
-                  grid: Grid | None = None) -> dict:
+                  grid: Grid | None = None, instances: np.ndarray | None = None) -> dict:
     """Match components one-to-one. False alarms require exhaustive truth or known negatives."""
     if not 0 < iou_threshold <= 1:
         raise ValueError("IoU threshold must lie in (0, 1].")
     p, count_p = ndimage.label(prediction)
-    t, count_t = ndimage.label(reference)
+    if instances is None:
+        t, count_t = ndimage.label(reference)
+    else:
+        foreground = np.asarray(reference, dtype=bool)
+        instances = np.asarray(instances)
+        if (instances.shape != foreground.shape or not np.issubdtype(instances.dtype, np.integer)
+                or np.any(instances < 0) or not np.array_equal(instances > 0, foreground)):
+            raise ValueError("Lesion identifiers must cover exactly the reference foreground.")
+        values = instances[foreground]
+        identifiers = np.unique(values)
+        t = np.zeros(foreground.shape, dtype=np.int32)
+        t[foreground] = np.searchsorted(identifiers, values) + 1
+        count_t = len(identifiers)
     hits = np.zeros(count_t, dtype=bool)
     t_size = np.bincount(t.flat)[1:]
     if count_p and count_t:
@@ -86,6 +98,17 @@ def match_lesions(prediction: np.ndarray, reference: np.ndarray, *, iou_threshol
         small = (t_size * grid.voxel_mm3) <= np.pi * 10 ** 3 / 6
         result.update(small_lesions=int(small.sum()), small_matched=int((small & hits).sum()))
     return result
+
+
+def lesion_instances(case: Case, reference: np.ndarray, grid: Grid, source: dict) -> np.ndarray | None:
+    endpoint = source.get("end_point")
+    if endpoint in {"manual_structural_primary_tumor", "expert_reviewed_primary_tumor"}:
+        return np.asarray(reference, dtype=np.int32)
+    if endpoint == "all_reported_lesions" and case.cohort == "AMBL":
+        from .ambl import native_instances
+
+        return native_instances(case, reference, grid)
+    return None
 
 
 def mask_metrics(a: np.ndarray, b: np.ndarray, grid: Grid) -> dict:

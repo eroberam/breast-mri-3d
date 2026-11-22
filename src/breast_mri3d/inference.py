@@ -15,7 +15,7 @@ from .geometry import Grid
 from .imaging import read_nifti
 from .labels import ENVELOPE, LABELS, REFERENCE_LABELS
 from .network import BreastMRI3D
-from .research import mask_metrics, match_lesions, read_manifest, summarize_metrics
+from .research import lesion_instances, mask_metrics, match_lesions, read_manifest, summarize_metrics
 
 
 def open_model(checkpoint: Path, device: torch.device) -> tuple[BreastMRI3D, dict]:
@@ -149,7 +149,8 @@ def evaluate(manifest: Path, checkpoint: Path, output: Path, *, split: str, devi
                       **mask_metrics(a, b, grid)}
             if label == "lesion" and (provenance[label] in {"manual", "confirmed_empty"}
                                       or metadata["reference"].get("assisted_manual")):
-                detections = match_lesions(a, b, grid=grid)
+                instances = lesion_instances(case, b, grid, metadata["reference"]) if native else None
+                detections = match_lesions(a, b, grid=grid, instances=instances)
                 if provenance[label] != "confirmed_empty" and not metadata.get("lesion_annotations_exhaustive", False):
                     detections.pop("false_alarms")
                 record.update(detections)

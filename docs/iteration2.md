@@ -87,6 +87,6 @@ breast-mri-3d score-nnunet "$P/AMBL/manifest.json" "$RUN/nnunet-ambl" --split te
   --out "$RUN/nnunet-ambl.json"
 ```
 
-Run `breast-mri-3d evaluate` on the same manifest and locked compact checkpoint with `--split test`, the locked `--threshold` and, if selected, `--rank-threshold`. Then use `python -m breast_mri3d.experiment compare REFERENCE_JSON PROPOSED_JSON --out PAIRED_JSON`. The report pairs patients before bootstrapping. Surface distance is reported only when both rows have a measurable HD95. Small lesions use a 10 mm equivalent-sphere diameter. Negative false alarms are counted only where absence or exhaustive annotation is documented.
+Run `breast-mri-3d evaluate` on the same manifest and locked compact checkpoint with `--split test`, the locked `--threshold` and, if selected, `--rank-threshold`. Then use `python -m breast_mri3d.experiment compare REFERENCE_JSON PROPOSED_JSON --out PAIRED_JSON`. The report pairs patients before bootstrapping. Surface distance is reported only when both rows have a measurable HD95. Small lesions use a 10 mm equivalent-sphere diameter. Primary-tumor references count each annotated tumor once, including when its mask is discontinuous. AMBL lesion matching retains the release's individual identifiers on the verified DICOM grid. Negative false alarms are counted only where absence or exhaustive annotation is documented.
 
 Report official benchmark performance separately under its frozen submission protocol. [MAMA-MIA challenge](https://mama-research.github.io/index.html)

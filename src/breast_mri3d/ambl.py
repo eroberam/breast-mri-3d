@@ -10,15 +10,17 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import tarfile
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 import numpy as np
 
 from .acquire import AMBL_ASSETS, AMBL_DCE, checksum, write_json
 from .dicom import assemble, scan_series
-from .imaging import prepare_dce
-from .iteration2 import _atomic_case
-from .prepare import _load_index_array, _match
+from .geometry import Grid
+from .imaging import prepare_dce, read_nifti, write_nifti
+from .iteration2 import _atomic_case, same_grid
+from .prepare import _load_index_array, _match, exact_reorientation
+from .research import Case
 
 
 RELEASE = "zenodo:17253223/v3"
@@ -139,6 +141,56 @@ def _matched_dce(visit: Path, pre: np.ndarray, post: np.ndarray):
     raise ValueError("Neither native multiphase series uniquely matched both released DCE phases.")
 
 
+def _integer_instances(values: np.ndarray) -> np.ndarray:
+    if (not np.isfinite(values).all() or np.any(values < 0) or np.any(values > np.iinfo(np.int32).max)
+            or not np.array_equal(values, np.floor(values))):
+        raise ValueError("AMBL lesion identifiers must be nonnegative integers.")
+    return values.astype(np.int32)
+
+
+def _write_native_instances(path: Path, values: np.ndarray, grid: Grid) -> None:
+    with TemporaryDirectory(dir=path.parent, prefix=".instances-") as temporary:
+        staged = Path(temporary) / path.name
+        write_nifti(staged, values, grid)
+        staged.replace(path)
+
+
+def native_instances(case: Case, reference: np.ndarray, grid: Grid) -> np.ndarray:
+    """Read released lesion identifiers, including for previously prepared AMBL cases."""
+    destination = case.path / "native_labels/lesion_instances.nii.gz"
+    if destination.is_file():
+        values, declared = read_nifti(destination)
+        if not same_grid(grid, declared):
+            raise ValueError("AMBL instance identifiers differ from the verified DICOM grid.")
+    else:
+        root = case.path.parents[2]
+        names = {patient.casefold(): (subject, patient) for subject, patient in inventory(root).items()}
+        subject, patient = names[case.patient]
+        raw = root / "raw/AMBL"
+        released = raw / "paired-release" / subject
+        values, _ = _load_index_array(released / "lesion.nii.gz")
+        values = _integer_instances(values)
+        try:
+            axes, flips = exact_reorientation(values > 0, np.asarray(reference, dtype=bool))
+        except ValueError:
+            # Symmetric foreground can admit multiple flips. Use the original
+            # image phase match to recover the only documented acquisition transform.
+            pre, _ = _load_index_array(released / "phase-0.nii.gz")
+            post, _ = _load_index_array(released / "phase-1.nii.gz")
+            _, series, axes, flips = _matched_dce(raw / "original-mr" / COLLECTION / patient, pre, post)
+            provenance = case.metadata["reference"]
+            if (series.source_instances_sha256 != provenance["source_instances_sha256"]
+                    or not same_grid(grid, series.grid)):
+                raise ValueError("The AMBL instance mask no longer matches the verified original DICOM phase.")
+        values = np.flip(values.transpose(axes), axis=flips)
+        if not np.array_equal(values > 0, reference):
+            raise ValueError("AMBL lesion identifiers do not reproduce the native binary reference.")
+        _write_native_instances(destination, values, grid)
+    if not np.issubdtype(values.dtype, np.integer) or not np.array_equal(values > 0, reference):
+        raise ValueError("AMBL lesion identifiers do not reproduce the native binary reference.")
+    return values
+
+
 def prepare_ambl(root: Path, model_lock: Path) -> Path:
     from .experiment import verify_external_lock
 
@@ -162,12 +214,10 @@ def prepare_ambl(root: Path, model_lock: Path) -> Path:
             labels, label_affine = _load_index_array(data / "lesion.nii.gz")
             if (pre.shape != post.shape or labels.shape != post.shape
                     or not np.allclose(pre_affine, post_affine, rtol=0, atol=.001)
-                    or not np.allclose(label_affine, post_affine, rtol=0, atol=.001)
-                    or not np.isfinite(labels).all() or np.any(labels < 0)
-                    or not np.array_equal(labels, np.floor(labels)) or not np.any(labels)):
+                    or not np.allclose(label_affine, post_affine, rtol=0, atol=.001) or not np.any(labels)):
                 raise ValueError("The released DCE phases and lesion reference lack a common index grid.")
             u0, u1, axes, flips = _matched_dce(visit, pre, post)
-            tumor = np.flip((labels > 0).transpose(axes), axis=flips)
+            instances = np.flip(_integer_instances(labels).transpose(axes), axis=flips)
             reference = {
                 "type": "dicom", "dataset_release": RELEASE, "end_point": "all_reported_lesions",
                 "assisted_manual": True, "phase_match": "full_voxel_equality_after_reorientation",
@@ -176,7 +226,8 @@ def prepare_ambl(root: Path, model_lock: Path) -> Path:
                 "precontrast_series_uid": u0.uid, "precontrast_instances_sha256": u0.source_instances_sha256,
             }
             _atomic_case(prepared / patient, prepare_dce(u0, u1), u1.grid,
-                         {"lesion": (tumor, u1.grid, "derived")}, reference, patient, "AMBL", "ambl_dce_early")
+                         {"lesion": (instances > 0, u1.grid, "derived")}, reference, patient, "AMBL", "ambl_dce_early")
+            _write_native_instances(prepared / patient / "native_labels/lesion_instances.nii.gz", instances, u1.grid)
         except (OSError, ValueError) as exc:
             excluded.append({"patient": patient, "reason": str(exc)})
         else:
