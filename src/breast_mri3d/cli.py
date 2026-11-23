@@ -67,6 +67,11 @@ def _parser() -> argparse.ArgumentParser:
     fit.add_argument("--teachers", action="store_true")
     fit.add_argument("--pairs", type=Path)
     fit.add_argument("--shared-decoder", action="store_true", help="controlled local single-decoder reference")
+    fit.add_argument("--input-mode", choices=("dce", "subtraction"), default="dce")
+    fit.add_argument("--model-spacing-mm", type=float, help="fixed LPS spacing for lesion-only training")
+    fit.add_argument("--boundary-weight", type=float, default=0.)
+    fit.add_argument("--resumable", action="store_true")
+    fit.add_argument("--resume-from", type=Path)
     score = commands.add_parser("evaluate", help="evaluate a trained checkpoint on a requested split")
     score.add_argument("manifest", type=Path)
     score.add_argument("checkpoint", type=Path)
@@ -89,10 +94,11 @@ def _parser() -> argparse.ArgumentParser:
     _export_args(segment)
     segment.add_argument("--pre", required=True, help="precontrast acquisition selector from list-dicom")
     segment.add_argument("--checkpoint", required=True, type=Path)
+    segment.add_argument("--locator", type=Path, help="coarse checkpoint for the v0.3 lesion cascade")
     segment.add_argument("--threshold", type=float, required=True)
     segment.add_argument("--rank-threshold", type=float)
     segment.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
-    segment.add_argument("--patch", type=int, nargs=3, default=(32, 128, 128))
+    segment.add_argument("--patch", type=int, nargs=3)
     demo = commands.add_parser("demo", help="generate a synthetic verified DICOM-to-print example")
     demo.add_argument("--out", required=True, type=Path)
     return p
@@ -177,7 +183,8 @@ def _segment(args: argparse.Namespace) -> None:
 
     from .dicom import assemble, scan_series
     from .export import export_case
-    from .geometry import model_grid
+    from .cascade import COARSE_SPACING_MM, lesion_probability
+    from .geometry import lps_grid, model_grid
     from .imaging import prepare_dce
     from .inference import binary_masks, open_model, predict
 
@@ -187,18 +194,33 @@ def _segment(args: argparse.Namespace) -> None:
     if args.pre not in series or args.series not in series:
         raise ValueError("The specified precontrast or postcontrast source series was not found.")
     pre, post = assemble(series[args.pre]), assemble(series[args.series])
-    grid = model_grid(post.grid)
-    aligned = prepare_dce(pre, post)
-    inputs = np.stack([post.grid.resample(x, grid, order=1) for x in aligned])
     device = torch.device(args.device)
     model, summary = open_model(args.checkpoint, device)
+    spacing = summary.get("model_spacing_mm")
+    grid = lps_grid(post.grid, spacing) if spacing is not None else model_grid(post.grid)
+    aligned = prepare_dce(pre, post)
+    inputs = np.stack([post.grid.resample(x, grid, order=1) for x in aligned])
     if args.rank_threshold is not None and not summary["verified_ranking_pairs"]:
         raise ValueError("The requested checkpoint was not trained with verified ranking pairs.")
-    probs, rank = predict(model, inputs, tuple(args.patch), device, ranking=args.rank_threshold is not None)
     labels = summary["supervised_labels"]
-    mask = binary_masks(probs, labels, args.threshold, ranking=rank, rank_threshold=args.rank_threshold)
+    patch = tuple(args.patch or (summary["patch_zyx"] if spacing is not None else (32, 128, 128)))
+    if args.locator is not None and (labels != ["lesion"] or spacing is None):
+        raise ValueError("The coarse locator requires a v0.3 lesion checkpoint.")
+    if spacing is not None and labels == ["lesion"]:
+        locator, locator_info = open_model(args.locator, device) if args.locator else (None, {})
+        if locator is not None and locator_info.get("model_spacing_mm") != COARSE_SPACING_MM:
+            raise ValueError("The coarse checkpoint has incompatible spacing.")
+        if not 0 < args.threshold < 1:
+            raise ValueError("A probability threshold must lie in (0, 1).")
+        prob = lesion_probability(model, inputs, grid, patch, device, locator=locator,
+                                  locator_patch=tuple(locator_info["patch_zyx"]) if locator is not None else None)
+        mask = {"lesion": prob >= args.threshold}
+    else:
+        probs, rank = predict(model, inputs, patch, device, ranking=args.rank_threshold is not None)
+        mask = binary_masks(probs, labels, args.threshold, ranking=rank, rank_threshold=args.rank_threshold)
     path = export_case(args.out, post, mask, mask_grid=grid, origin={
         "type": "research_model", "checkpoint_sha256": hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),
+        "locator_sha256": hashlib.sha256(args.locator.read_bytes()).hexdigest() if args.locator else None,
         "threshold": args.threshold, "rank_threshold": args.rank_threshold,
         "series_instance_uid": post.uid, "frame_of_reference_uid": post.frame_uid,
         "precontrast_series_uid": pre.uid, "source_instances_sha256": post.source_instances_sha256,
@@ -266,7 +288,9 @@ def main() -> None:
         print(json.dumps(train(args.manifest, args.out, steps=args.steps, width=args.width,
                                patch=tuple(args.patch), seed=args.seed, device_name=args.device,
                                teachers=args.teachers, pairs_path=args.pairs, budget_seconds=args.budget_seconds,
-                               dual_decoder=not args.shared_decoder), indent=2))
+                               dual_decoder=not args.shared_decoder, input_mode=args.input_mode,
+                               model_spacing_mm=args.model_spacing_mm, boundary_weight=args.boundary_weight,
+                               resumable=args.resumable, resume_from=args.resume_from), indent=2))
     elif args.command == "evaluate":
         from .inference import evaluate
 

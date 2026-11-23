@@ -45,17 +45,19 @@ def require_coverage(mask: np.ndarray, source: Grid, target: Grid, minimum: floa
 
 
 def _atomic_case(destination: Path, channels: np.ndarray, grid: Grid, references: dict,
-                 reference: dict, patient: str, cohort: str, protocol: str | None = None) -> None:
+                 reference: dict, patient: str, cohort: str, protocol: str | None = None, *,
+                 target_grid: Grid | None = None) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         case = json.loads((destination / "case.json").read_text(encoding="utf-8"))
         if (case["patient"] != patient or case["reference"] != reference
+                or (target_grid is not None and not same_grid(Grid.from_dict(case["grid"]), target_grid))
                 or case["labels"] != {name: value[2] for name, value in references.items()}):
             raise ValueError("The prepared case belongs to a different source or label release.")
         return
     with TemporaryDirectory(dir=destination.parent, prefix=".case-") as temporary:
         staged = Path(temporary) / "case"
-        _write_case(staged, channels, grid, references, reference, patient, cohort, protocol)
+        _write_case(staged, channels, grid, references, reference, patient, cohort, protocol, target_grid=target_grid)
         staged.rename(destination)
 
 
@@ -256,6 +258,7 @@ def main() -> None:
     odelia.add_argument("--token-file", required=True, type=Path)
     odelia.add_argument("--limit", type=int, default=80)
     odelia.add_argument("--workers", type=int, default=5)
+    odelia.add_argument("--unseen-test-of", type=Path, help="reserve patients absent from a previous selection")
     merge = commands.add_parser("combine-development")
     merge.add_argument("--out", type=Path, required=True)
     merge.add_argument("--primary", type=Path, nargs="+", required=True)
@@ -286,7 +289,8 @@ def main() -> None:
     elif args.command == "prepare-odelia":
         from .odelia import prepare_odelia
 
-        print(prepare_odelia(args.root, token_file=args.token_file, limit=args.limit, workers=args.workers))
+        print(prepare_odelia(args.root, token_file=args.token_file, limit=args.limit, workers=args.workers,
+                             unseen_test_of=args.unseen_test_of))
     elif args.command == "combine-development":
         print(combine_development(args.out, args.primary, args.auxiliary))
     else:

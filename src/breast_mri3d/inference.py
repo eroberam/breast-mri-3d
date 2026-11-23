@@ -22,7 +22,8 @@ def open_model(checkpoint: Path, device: torch.device) -> tuple[BreastMRI3D, dic
     record = torch.load(checkpoint, map_location="cpu", weights_only=True)
     if record.get("labels") != list(LABELS):
         raise ValueError("Checkpoint has an incompatible label order.")
-    model = BreastMRI3D(record["width"], dual_decoder=record["dual_decoder"])
+    model = BreastMRI3D(record["width"], dual_decoder=record["dual_decoder"],
+                        input_mode=record.get("input_mode", "dce"))
     model.load_state_dict(record["state_dict"], strict=True)
     if device.type == "cpu":
         torch.set_num_threads(min(torch.get_num_threads(), 6))
@@ -39,14 +40,16 @@ def _starts(n: int, width: int) -> list[int]:
 
 @torch.inference_mode()
 def predict(model: BreastMRI3D, volume: np.ndarray, patch: tuple[int, int, int],
-            device: torch.device, *, ranking: bool = False) -> tuple[np.ndarray, np.ndarray | None]:
+            device: torch.device, *, ranking: bool = False,
+            label_indices: tuple[int, ...] | None = None) -> tuple[np.ndarray, np.ndarray | None]:
     if (volume.ndim != 4 or volume.shape[0] != 3 or len(patch) != 3
             or any(n < 8 or n % 8 for n in patch)):
         raise ValueError("Expected three DCE channels and a patch size divisible by eight.")
     original = volume.shape[1:]
-    src = np.pad(volume, [(0, 0)] + [(0, max(0, p - n)) for p, n in zip(patch, original)])
+    padding = [(0, max(0, p - n)) for p, n in zip(patch, original)]
+    src = np.pad(volume, [(0, 0), *padding]) if any(p for _, p in padding) else volume
     shape = src.shape[1:]
-    total = np.zeros((len(LABELS), *shape), dtype=np.float32)
+    total = np.zeros((len(LABELS) if label_indices is None else len(label_indices), *shape), dtype=np.float32)
     scores = np.zeros(shape, dtype=np.float32) if ranking else None
     covered = np.zeros(shape, dtype=np.float32)
     z, y, x = (np.linspace(-1, 1, n, dtype=np.float32) for n in patch)
@@ -56,7 +59,12 @@ def predict(model: BreastMRI3D, volume: np.ndarray, patch: tuple[int, int, int],
         sample = np.asarray(src[(..., *sl)], dtype=np.float32, order="C")
         batch = torch.as_tensor(sample[None], device=device)
         with torch.autocast(device.type, enabled=device.type == "cuda"):
-            logits, candidate = model(batch)
+            if label_indices == (LABELS.index("lesion"),) and not ranking:
+                logits = model.lesion(batch)
+            else:
+                logits, candidate = model(batch)
+                if label_indices is not None:
+                    logits = logits[:, label_indices]
         total[(..., *sl)] += logits[0].float().sigmoid().cpu().numpy() * importance
         covered[sl] += importance
         if scores is not None:

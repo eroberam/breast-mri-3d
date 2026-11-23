@@ -30,11 +30,16 @@ def _client(root: Path, token: str):
     return client
 
 
-def prepare_mama(root: Path, *, token_file: Path, limit: int = 32, workers: int = 3) -> Path:
+def read_synapse_token(token_file: Path) -> str:
     token = token_file.read_text(encoding="utf-8-sig").strip()
     token = re.sub(r"^(?:Bearer\s+|(?:SYNAPSE_AUTH_TOKEN|authToken)\s*=\s*)", "", token, flags=re.I).strip('"\'')
     if not re.fullmatch(r"[A-Za-z0-9_.-]{20,}", token):
         raise ValueError("The supplied file does not contain a supported Synapse token format.")
+    return token
+
+
+def prepare_mama(root: Path, *, token_file: Path, limit: int = 32, workers: int = 3) -> Path:
+    token = read_synapse_token(token_file)
     if limit < 10:
         raise ValueError("Select at least ten cases for both source strata.")
     raw = root / "raw/MAMA-MIA"

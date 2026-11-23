@@ -48,14 +48,18 @@ def prepare_volumes(directory: Path, pre: Path, post: Path, references: dict[str
 
 def _write_case(directory: Path, channels: np.ndarray, native_grid: Grid,
                 references: dict[str, tuple[np.ndarray, Grid, str]], source: dict,
-                patient: str, cohort: str, phase_protocol: str | None) -> None:
+                patient: str, cohort: str, phase_protocol: str | None, *,
+                target_grid: Grid | None = None) -> None:
     if not patient.strip() or not cohort.strip():
         raise ValueError("A prepared case needs canonical patient and cohort identifiers.")
-    target = model_grid(native_grid)
-    image = np.stack([native_grid.resample(channel, target, order=1) for channel in channels])
+    target = target_grid if target_grid is not None else model_grid(native_grid)
+    image = np.empty((len(channels), *target.shape), dtype=np.float16)
+    for i, channel in enumerate(channels):
+        image[i] = native_grid.resample(np.asarray(channel, dtype=np.float32), target, order=1)
     labels = np.zeros((len(LABELS), *target.shape), dtype=np.uint8)
     provenance = {}
     native_labels = {}
+    minimum_support = []
     envelope = None
     for name, (mask, grid, kind) in references.items():
         if name not in REFERENCE_LABELS or kind not in {"manual", "derived", "confirmed_empty"}:
@@ -66,7 +70,12 @@ def _write_case(directory: Path, channels: np.ndarray, native_grid: Grid,
         native = grid.resample(mask.astype(np.uint8), native_grid, order=0)
         train_mask = native_grid.resample(native, target, order=0)
         if mask.any() and not train_mask.any():
-            raise ValueError(f"Reference {name} does not intersect the training grid.")
+            if target_grid is None or name != "lesion" or kind != "manual" or not native.any():
+                raise ValueError(f"Reference {name} does not intersect the training grid.")
+            centre = native_grid.points(np.argwhere(native).mean(axis=0))
+            index = np.rint(np.linalg.solve(target.affine[:3, :3], centre - target.affine[:3, 3]))
+            train_mask[tuple(np.clip(index.astype(int), 0, np.asarray(target.shape) - 1))] = 1
+            minimum_support.append(name)
         if name == ENVELOPE:
             envelope = train_mask
         else:
@@ -76,7 +85,7 @@ def _write_case(directory: Path, channels: np.ndarray, native_grid: Grid,
     if not provenance:
         raise ValueError("Supply at least one annotated structure or verified absence.")
     directory.mkdir(parents=True, exist_ok=False)
-    np.save(directory / "image.npy", image.astype(np.float16), allow_pickle=False)
+    np.save(directory / "image.npy", image, allow_pickle=False)
     np.save(directory / "labels.npy", labels, allow_pickle=False)
     if envelope is not None:
         np.save(directory / f"{ENVELOPE}.npy", envelope, allow_pickle=False)
@@ -87,6 +96,8 @@ def _write_case(directory: Path, channels: np.ndarray, native_grid: Grid,
     meta = {"patient": patient, "cohort": cohort, "labels": provenance, "channel_order": list(LABELS),
             "grid": target.as_dict(), "native_grid": native_grid.as_dict(), "phase_protocol": phase_protocol,
             "reference": source}
+    if minimum_support:
+        meta["minimum_model_grid_support"] = minimum_support
     (directory / "case.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
 

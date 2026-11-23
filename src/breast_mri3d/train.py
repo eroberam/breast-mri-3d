@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
 import time
 
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 import torch
 import torch.nn.functional as F
 
@@ -173,10 +175,47 @@ def _ranking(model: BreastMRI3D, pair: tuple, patch: tuple[int, ...], device: to
     return F.softplus(scores[1] - scores[0])
 
 
+def _lesion_patch(case: Case, rng: np.random.Generator, patch: tuple[int, ...],
+                  foreground: dict[Path, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    image = np.load(case.path / "image.npy", mmap_mode="r", allow_pickle=False)
+    label = np.load(case.path / "labels.npy", mmap_mode="r", allow_pickle=False)[-1]
+    center = tuple(int(rng.integers(n)) for n in label.shape)
+    if rng.random() < .65:
+        if case.path not in foreground:
+            foreground[case.path] = np.argwhere(label).astype(np.int32)
+        positive = foreground[case.path]
+        if len(positive):
+            jitter = [int(rng.integers(-n // 4, n // 4 + 1)) for n in patch]
+            center = tuple(int(c) + j for c, j in zip(positive[rng.integers(len(positive))], jitter))
+    x, y = crop(image, center, patch), crop(label, center, patch)
+    if rng.random() < .5:
+        x, y = x[..., ::-1], y[..., ::-1]
+    x = x.astype(np.float32, copy=True, order="C")
+    x *= rng.uniform(.9, 1.1)
+    return x, y.astype(np.float32, copy=True, order="C")
+
+
+def _distance_penalty(target: np.ndarray, spacing_mm: float) -> np.ndarray:
+    positive = target > 0
+    inside = distance_transform_edt(positive, sampling=spacing_mm)
+    outside = distance_transform_edt(~positive, sampling=spacing_mm)
+    # A discrepancy farther from the reference surface costs more, up to 20 mm.
+    return np.minimum(inside + outside, 20.).astype(np.float32) / 20.
+
+
+def _save_resume(path: Path, state: dict) -> None:
+    with TemporaryDirectory(dir=path.parent, prefix=".resume-") as tmp:
+        staged = Path(tmp) / path.name
+        torch.save(state, staged)
+        os.replace(staged, path)
+
+
 def train(manifest: Path, destination: Path, *, steps: int, width: int,
           patch: tuple[int, int, int], seed: int, device_name: str, teachers: bool = False,
           pairs_path: Path | None = None, dual_decoder: bool = True,
-          budget_seconds: float | None = None) -> dict:
+          budget_seconds: float | None = None, input_mode: str = "dce",
+          model_spacing_mm: float | None = None, boundary_weight: float = 0.,
+          resumable: bool = False, resume_from: Path | None = None) -> dict:
     if steps < 1 or len(patch) != 3 or any(n < 8 or n % 8 for n in patch):
         raise ValueError("Training requires positive steps and three patch dimensions divisible by eight.")
     if budget_seconds is not None and (not np.isfinite(budget_seconds) or budget_seconds <= 0):
@@ -188,6 +227,16 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
     development = [c for c in cases if c.split == "train"]
     if not development:
         raise ValueError("The manifest has no training cases.")
+    lesion_only = model_spacing_mm is not None
+    if lesion_only:
+        if (not np.isfinite(model_spacing_mm) or model_spacing_mm <= 0 or teachers or pairs_path
+                or any("lesion" not in c.metadata["labels"] or not np.allclose(c.grid.spacing, model_spacing_mm)
+                       for c in development)):
+            raise ValueError("Lesion-only training requires a fixed physical grid and known lesion labels.")
+    if not np.isfinite(boundary_weight) or boundary_weight < 0 or boundary_weight and not lesion_only:
+        raise ValueError("The distance penalty requires lesion-only training in millimetres.")
+    if resume_from and not resumable:
+        raise ValueError("A continuation requires resumable training.")
     if destination.exists() or report.exists():
         raise FileExistsError(f"Checkpoint or training report already exists: {destination}")
     if teachers:
@@ -206,41 +255,91 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
         raise RuntimeError("CUDA was requested but PyTorch cannot see a CUDA device.")
     if device.type == "cpu":
         torch.set_num_threads(min(torch.get_num_threads(), 6))
-    model = BreastMRI3D(width, dual_decoder=dual_decoder).to(device)
+    model = BreastMRI3D(width, dual_decoder=dual_decoder, input_mode=input_mode).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
-    if use_amp:
-        torch.cuda.reset_peak_memory_stats(device)
+    resume_file = destination.with_suffix(".resume.pt")
+    manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    config = {"manifest_sha256": manifest_hash, "width": width, "patch": list(patch), "seed": seed,
+              "input_mode": input_mode, "model_spacing_mm": model_spacing_mm, "boundary_weight": boundary_weight,
+              "dual_decoder": dual_decoder, "teachers": teachers, "pairs": str(pairs_path) if pairs_path else None}
     history = []
     distilled_batches = 0
     supervised = set()
+    previous_time = 0.
+    if resumable:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source = resume_file if resume_file.is_file() else resume_from
+        if source is not None:
+            state = torch.load(source, map_location="cpu", weights_only=True)
+            if state["config"] != config:
+                raise ValueError("The continuation does not match the original training recipe.")
+            model.load_state_dict(state["model"])
+            optimizer.load_state_dict(state["optimizer"])
+            scaler.load_state_dict(state["scaler"])
+            rng.bit_generator.state = state["rng"]
+            torch.set_rng_state(state["torch_rng"])
+            if use_amp and state["cuda_rng"] is not None:
+                torch.cuda.set_rng_state(state["cuda_rng"], device)
+            history, previous_time = state["history"], state["elapsed_seconds"]
+            distilled_batches, supervised = state["distilled_batches"], set(state["supervised"])
+    if use_amp:
+        torch.cuda.reset_peak_memory_stats(device)
+    foreground = {}
     started = time.monotonic()
     last_log = started
+    last_save = started
+
+    def save_progress(elapsed: float) -> None:
+        _save_resume(resume_file, {"config": config, "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                                   "scaler": scaler.state_dict(), "rng": rng.bit_generator.state,
+                                   "torch_rng": torch.get_rng_state(),
+                                   "cuda_rng": torch.cuda.get_rng_state(device) if use_amp else None,
+                                   "history": history, "elapsed_seconds": elapsed,
+                                   "distilled_batches": distilled_batches, "supervised": sorted(supervised)})
+
     model.train()
-    for step in range(steps):
+    for step in range(len(history), steps):
+        if history and budget_seconds is not None and previous_time + time.monotonic() - started >= budget_seconds:
+            break
         case = development[int(rng.integers(len(development)))]
-        batch = _sample(case, rng, patch, use_teacher=teachers)
-        supervised.update(name for name, eligible in zip(LABELS, batch[2]) if eligible)
-        envelope_known = bool(batch[6][0])
-        envelope_distilled = bool(batch[8].any())
-        if envelope_known:
-            supervised.add(ENVELOPE)
-        x, y, known, soft, trusted = (torch.as_tensor(t[None], device=device) for t in batch[:5])
-        if (batch[4] & ~batch[2][:, None, None, None]).any() or envelope_distilled:
-            distilled_batches += 1
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device.type, enabled=use_amp):
-            logit, _ = model(x)
-        loss = segmentation_loss(logit.float(), y, known)
-        if teachers:
-            loss = loss + .25 * distillation_loss(logit.float(), soft, trusted, known)
-        if envelope_known or envelope_distilled:
-            union = envelope_logit(logit.float())
-            envelope_y, envelope_k, envelope_t, envelope_valid = (torch.as_tensor(t[None], device=device) for t in batch[5:])
+        if lesion_only:
+            image, lesion = _lesion_patch(case, rng, patch, foreground)
+            x = torch.as_tensor(image[None], device=device)
+            y = torch.as_tensor(lesion[None, None], device=device)
+            known = torch.ones((1, 1), dtype=torch.bool, device=device)
+            with torch.autocast(device.type, enabled=use_amp):
+                logit = model.lesion(x)
+            logit = logit.float()
+            loss = segmentation_loss(logit, y, known)
+            if boundary_weight and lesion.any() and not lesion.all():
+                distance = torch.as_tensor(_distance_penalty(lesion, model_spacing_mm), device=device)
+                loss = loss + boundary_weight * ((logit.sigmoid() - y).abs() * distance).mean()
+            supervised.add("lesion")
+        else:
+            batch = _sample(case, rng, patch, use_teacher=teachers)
+            supervised.update(name for name, eligible in zip(LABELS, batch[2]) if eligible)
+            envelope_known = bool(batch[6][0])
+            envelope_distilled = bool(batch[8].any())
             if envelope_known:
-                loss = loss + .5 * segmentation_loss(union, envelope_y, envelope_k)
-            if envelope_distilled:
-                loss = loss + .25 * distillation_loss(union, envelope_t, envelope_valid, envelope_k)
+                supervised.add(ENVELOPE)
+            x, y, known, soft, trusted = (torch.as_tensor(t[None], device=device) for t in batch[:5])
+            if (batch[4] & ~batch[2][:, None, None, None]).any() or envelope_distilled:
+                distilled_batches += 1
+            with torch.autocast(device.type, enabled=use_amp):
+                logit, _ = model(x)
+            loss = segmentation_loss(logit.float(), y, known)
+            if teachers:
+                loss = loss + .25 * distillation_loss(logit.float(), soft, trusted, known)
+            if envelope_known or envelope_distilled:
+                union = envelope_logit(logit.float())
+                envelope_y, envelope_k, envelope_t, envelope_valid = (
+                    torch.as_tensor(t[None], device=device) for t in batch[5:])
+                if envelope_known:
+                    loss = loss + .5 * segmentation_loss(union, envelope_y, envelope_k)
+                if envelope_distilled:
+                    loss = loss + .25 * distillation_loss(union, envelope_t, envelope_valid, envelope_k)
         if pairs:
             # Backpropagate the segmentation before creating two additional patch graphs.
             scaler.scale(loss).backward()
@@ -256,19 +355,27 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
             raise ValueError(f"Non-finite loss at update {step + 1}.")
         history.append(value)
         now = time.monotonic()
-        reached_budget = budget_seconds is not None and now - started >= budget_seconds
+        elapsed = previous_time + now - started
+        reached_budget = budget_seconds is not None and elapsed >= budget_seconds
         if step == 0 or now - last_log >= 30 or step + 1 == steps or reached_budget:
-            print(f"update {step + 1}/{steps} seconds={now - started:.1f} loss={value:.5f}", flush=True)
+            print(f"update {step + 1}/{steps} seconds={elapsed:.1f} loss={value:.5f}", flush=True)
             last_log = now
+        if resumable and now - last_save >= 180:
+            save_progress(elapsed)
+            last_save = now
         if reached_budget:
             break
     if teachers and not distilled_batches:
         raise ValueError("Distillation was requested but never sampled an eligible teacher target.")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    elapsed = previous_time + time.monotonic() - started
+    if resumable:
+        save_progress(elapsed)
     summary = {"training_cases": len(development), "updates": len(history), "seed": seed, "device": str(device),
-               "elapsed_seconds": round(time.monotonic() - started, 3), "patch_zyx": list(patch),
+               "elapsed_seconds": round(elapsed, 3), "patch_zyx": list(patch),
                "budget_seconds": budget_seconds,
-               "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+               "manifest_sha256": manifest_hash, "input_mode": input_mode, "model_spacing_mm": model_spacing_mm,
+               "boundary_weight": boundary_weight,
                "loss_first": history[0], "loss_last": history[-1], "parameters": sum(p.numel() for p in model.parameters()),
                "distilled_updates": distilled_batches, "verified_ranking_pairs": len(pairs),
                "supervised_labels": [name for name in REFERENCE_LABELS if name in supervised]}
@@ -280,6 +387,7 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
         checkpoint = Path(tmp) / destination.name
         metadata = Path(tmp) / report.name
         torch.save({"state_dict": model.cpu().state_dict(), "width": width, "dual_decoder": dual_decoder,
+                    "input_mode": input_mode,
                     "labels": list(LABELS), "summary": summary}, checkpoint)
         metadata.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         if destination.exists() or report.exists():

@@ -29,7 +29,7 @@ Volume measurements use the native mask and physical voxel size. The printable a
 
 ## Reproduce the experiment
 
-Use the [expert-contour recipe](docs/iteration2.md) to acquire the source cohorts, train the compact model and its time-matched reference, and score a frozen external evaluation. The [validation specification](docs/validation.md) describes partial labels and geometric checks. Provider conditions and source links are in the [source registry](configs/sources.json).
+The v0.3 recipe compares subtraction and paired DCE inputs on a common patient grid, with a low-resolution locator and an optional high-resolution refiner. To fit the models and run the locked comparisons, use the [v0.3 experiment](docs/iteration3.md). Prior cohort preparation and partial-label supervision are documented separately. [v0.2 experiment](docs/iteration2.md) · [Validation](docs/validation.md) · [Data sources](configs/sources.json)
 
 The [synthetic multipart assembly](examples/synthetic/assembly.3mf) can be opened directly in a 3MF viewer. The demo generates self-contained synthetic DICOM input and verifies a fresh export.
 

@@ -11,7 +11,7 @@ import re
 import numpy as np
 
 from .acquire import checksum, write_json
-from .geometry import Grid
+from .geometry import Grid, lps_grid
 from .imaging import dce_channels
 from .iteration2 import _atomic_case, same_grid
 
@@ -49,7 +49,8 @@ def _volume(value, affine) -> tuple[np.ndarray, Grid]:
     return volume, Grid(volume.shape, lps)
 
 
-def prepare_odelia(root: Path, *, token_file: Path, limit: int = 80, workers: int = 5) -> Path:
+def prepare_odelia(root: Path, *, token_file: Path, limit: int = 80, workers: int = 5,
+                   unseen_test_of: Path | None = None) -> Path:
     from huggingface_hub import HfApi, HfFileSystem
     import pyarrow.parquet as pq
 
@@ -65,6 +66,11 @@ def prepare_odelia(root: Path, *, token_file: Path, limit: int = 80, workers: in
         meta = {"revision": repo.sha, "files": [{"path": f.rfilename, "bytes": f.size} for f in repo.siblings]}
         write_json(meta_path, meta)
     base = f"datasets/{REPOSITORY}@{meta['revision']}"
+    previous = json.loads(unseen_test_of.read_text(encoding="utf-8-sig")) if unseen_test_of else None
+    if previous is not None and previous["revision"] != meta["revision"]:
+        raise ValueError("The new ODELIA holdout must use the same provider release as the exposure list.")
+    known = {row["patient"] for row in previous["cases"]} if previous is not None else set()
+    previous_hash = checksum(unseen_test_of) if unseen_test_of else None
     shards = [row["path"] for row in meta["files"] if re.fullmatch(r"data/(?:train|val)-[^/]+\.parquet", row["path"])]
     if not shards:
         raise ValueError("Bilateral development shards are unavailable.")
@@ -91,7 +97,8 @@ def prepare_odelia(root: Path, *, token_file: Path, limit: int = 80, workers: in
     acquisition = root / "acquisition/odelia-negative-selection.json"
     if acquisition.exists():
         chosen = json.loads(acquisition.read_text(encoding="utf-8"))
-        if chosen["revision"] != meta["revision"] or chosen["limit"] != limit:
+        if (chosen["revision"] != meta["revision"] or chosen["limit"] != limit
+                or chosen.get("previous_selection_sha256") != previous_hash):
             raise ValueError("The negative ODELIA selection is already locked to a release and size.")
         selection = chosen["cases"]
     else:
@@ -108,18 +115,24 @@ def prepare_odelia(root: Path, *, token_file: Path, limit: int = 80, workers: in
                     print(f"ODELIA metadata shards scanned {i}/{len(shards)}", flush=True)
         selection, seen = [], set()
         negatives.sort(key=lambda row: (hashlib.sha256(f"19:{row['patient']}".encode()).digest(), row["shard"], row["row"]))
-        for split, quota in (("train", round(.75 * limit)), ("validation", limit - round(.75 * limit))):
+        quotas = ((None, limit),) if previous is not None else (("train", round(.75 * limit)),
+                                                               ("validation", limit - round(.75 * limit)))
+        for split, quota in quotas:
             count = 0
             for row in negatives:
                 patient = row["patient"]
-                if row["split"] != split or len(roles[patient]) != 1 or patient in seen:
+                if ((split is not None and row["split"] != split) or len(roles[patient]) != 1
+                        or patient in seen or patient in known):
                     continue
-                selection.append(row)
+                selection.append(row if split is not None else {**row, "provider_split": row["split"], "split": "test"})
                 seen.add(patient)
                 count += 1
                 if count >= quota:
                     break
-        write_json(acquisition, {"revision": meta["revision"], "limit": limit, "cases": selection})
+        write_json(acquisition, {"revision": meta["revision"], "limit": limit, "cases": selection,
+                                 "previous_selection_sha256": previous_hash})
+    if any(row["patient"] in known for row in selection):
+        raise ValueError("A previously used ODELIA patient appears in the new holdout.")
 
     prepared = root / "prepared/ODELIA"
 
@@ -139,7 +152,8 @@ def prepare_odelia(root: Path, *, token_file: Path, limit: int = 80, workers: in
                       "label": "bilateral_lesion_code_zero", "native_footprint": post_grid.as_dict()}
             _atomic_case(destination, dce_channels(pre.astype(np.float32), post.astype(np.float32)), post_grid,
                          {"lesion": (np.zeros(post_grid.shape, dtype=np.uint8), post_grid, "confirmed_empty")},
-                         source, patient, "ODELIA", f"odelia_{str(candidate['cohort_site']).lower()}_early_post")
+                         source, patient, "ODELIA", f"odelia_{str(candidate['cohort_site']).lower()}_early_post",
+                         target_grid=lps_grid(post_grid) if previous is not None else None)
         return {"patient": patient, "path": patient, "cohort": "ODELIA", "split": candidate["split"]}
 
     correct, skipped = [], []
