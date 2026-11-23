@@ -25,6 +25,15 @@ def prepare(manifest: Path) -> None:
 
 
 def train(plans: str, hours: float) -> None:
+    from filelock import FileLock
+
+    queue = Path(os.environ["nnUNet_results"]).parent / "gpu-training.lock"
+    queue.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(queue, timeout=14 * 3600):
+        _train(plans, hours)
+
+
+def _train(plans: str, hours: float) -> None:
     import torch
     from nnunetv2.run.run_training import get_trainer_from_args
 
