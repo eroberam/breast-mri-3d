@@ -123,6 +123,7 @@ def test_reference_inherits_missing_units_only_from_an_identical_source_grid(tmp
 
 def test_resume_restores_optimizer_and_foreground_sampling(tmp_path):
     torch = pytest.importorskip("torch")
+    from breast_mri3d.acquire import checksum, write_json
     from breast_mri3d.prepare import _write_case
     from breast_mri3d.train import train
 
@@ -144,3 +145,11 @@ def test_resume_restores_optimizer_and_foreground_sampling(tmp_path):
             for name in ("continued.pt", "continuous.pt"))
     assert result["updates"] == 2
     assert all(torch.equal(a[name], b[name]) for name in a)
+    probabilities = tmp_path / "teacher.npy"
+    np.save(probabilities, np.where(lesion, .75, .01).astype(np.float16))
+    teacher = tmp_path / "teacher.json"
+    write_json(teacher, {"development_sha256": checksum(manifest), "training": [
+        {"patient": "p1", "probability": probabilities.name, "sha256": checksum(probabilities)}]})
+    distilled = train(manifest, tmp_path / "distilled.pt", steps=1, lesion_teacher=teacher, **recipe)
+    assert distilled["distilled_updates"] == 1
+    assert distilled["lesion_teacher_sha256"] == checksum(teacher)

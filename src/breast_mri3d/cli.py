@@ -72,6 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     fit.add_argument("--boundary-weight", type=float, default=0.)
     fit.add_argument("--resumable", action="store_true")
     fit.add_argument("--resume-from", type=Path)
+    fit.add_argument("--lesion-teacher", type=Path, help="verified v0.3 calibration and training-only probability receipt")
     score = commands.add_parser("evaluate", help="evaluate a trained checkpoint on a requested split")
     score.add_argument("manifest", type=Path)
     score.add_argument("checkpoint", type=Path)
@@ -290,7 +291,8 @@ def main() -> None:
                                teachers=args.teachers, pairs_path=args.pairs, budget_seconds=args.budget_seconds,
                                dual_decoder=not args.shared_decoder, input_mode=args.input_mode,
                                model_spacing_mm=args.model_spacing_mm, boundary_weight=args.boundary_weight,
-                               resumable=args.resumable, resume_from=args.resume_from), indent=2))
+                               resumable=args.resumable, resume_from=args.resume_from,
+                               lesion_teacher=args.lesion_teacher), indent=2))
     elif args.command == "evaluate":
         from .inference import evaluate
 

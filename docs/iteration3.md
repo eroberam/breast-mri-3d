@@ -31,6 +31,8 @@ Run one GPU fit at a time. The program waits for the split receipts and replay, 
 
 The initial limit is six hours per arm. Each stage of the cascade receives three. The leading compact arm and the reference continue to a cumulative twelve hours. Adjustment scores select the checkpoint. Compact threshold selection maximizes native mean Dice on the 120 adjustment patients over 0.30, 0.45, 0.60, 0.75 and 0.90. The reference uses its binary argmax. Candidate weights, operating points and input manifests are hashed before held-out scoring.
 
+After the locked comparison, the optional `python -m breast_mri3d.teacher_v03 ablate "$DATA" --trainer-dir configs/nnunet` command runs one adjustment-only ablation. It calibrates the locally fitted ResEncM teacher on manual adjustment contours and generates soft targets for the training patients. The student fits for six hours using the leading single-stage input mode. The frozen primary comparison remains the basis of the held-out results.
+
 Native scoring retains zero Dice when a tumor is missed. It reports paired mean Dice and patient bootstrap confidence intervals, median Dice, HD95 on cases with two surfaces, and absolute volume error. When nnU-Net omits the NIfTI unit, the scorer transfers millimetres from the original model input after matching the shape and affine. Small-lesion sensitivity uses one-to-one matching at IoU ≥ 0.10 and diameter-equivalent volume ≤ 10 mm. Negative-exam false alarms use bilateral ODELIA controls. Local scores and the official blind Task 1 leaderboard estimate different endpoints and populations. [Official benchmark methods and results](https://doi.org/10.1109/TMI.2026.3733343) · [Long-term benchmark](https://www.codabench.org/competitions/7425/)
 
 ## DICOM export

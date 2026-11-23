@@ -176,7 +176,8 @@ def _ranking(model: BreastMRI3D, pair: tuple, patch: tuple[int, ...], device: to
 
 
 def _lesion_patch(case: Case, rng: np.random.Generator, patch: tuple[int, ...],
-                  foreground: dict[Path, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+                  foreground: dict[Path, np.ndarray], teacher: Path | None = None
+                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     image = np.load(case.path / "image.npy", mmap_mode="r", allow_pickle=False)
     label = np.load(case.path / "labels.npy", mmap_mode="r", allow_pickle=False)[-1]
     center = tuple(int(rng.integers(n)) for n in label.shape)
@@ -188,11 +189,23 @@ def _lesion_patch(case: Case, rng: np.random.Generator, patch: tuple[int, ...],
             jitter = [int(rng.integers(-n // 4, n // 4 + 1)) for n in patch]
             center = tuple(int(c) + j for c, j in zip(positive[rng.integers(len(positive))], jitter))
     x, y = crop(image, center, patch), crop(label, center, patch)
-    if rng.random() < .5:
+    reflect = rng.random() < .5
+    if reflect:
         x, y = x[..., ::-1], y[..., ::-1]
     x = x.astype(np.float32, copy=True, order="C")
     x *= rng.uniform(.9, 1.1)
-    return x, y.astype(np.float32, copy=True, order="C")
+    hint = None
+    if teacher is not None:
+        probabilities = np.load(teacher, mmap_mode="r", allow_pickle=False)
+        if probabilities.shape != label.shape:
+            raise ValueError("The lesion teacher probabilities have a different grid.")
+        hint = crop(probabilities, center, patch)
+        if reflect:
+            hint = hint[..., ::-1]
+        hint = hint.astype(np.float32, copy=True, order="C")
+        if not np.isfinite(hint).all() or hint.min() < 0 or hint.max() > 1:
+            raise ValueError("Invalid lesion teacher probabilities.")
+    return x, y.astype(np.float32, copy=True, order="C"), hint
 
 
 def _distance_penalty(target: np.ndarray, spacing_mm: float) -> np.ndarray:
@@ -215,7 +228,7 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
           pairs_path: Path | None = None, dual_decoder: bool = True,
           budget_seconds: float | None = None, input_mode: str = "dce",
           model_spacing_mm: float | None = None, boundary_weight: float = 0.,
-          resumable: bool = False, resume_from: Path | None = None) -> dict:
+          resumable: bool = False, resume_from: Path | None = None, lesion_teacher: Path | None = None) -> dict:
     if steps < 1 or len(patch) != 3 or any(n < 8 or n % 8 for n in patch):
         raise ValueError("Training requires positive steps and three patch dimensions divisible by eight.")
     if budget_seconds is not None and (not np.isfinite(budget_seconds) or budget_seconds <= 0):
@@ -237,6 +250,13 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
         raise ValueError("The distance penalty requires lesion-only training in millimetres.")
     if resume_from and not resumable:
         raise ValueError("A continuation requires resumable training.")
+    lesion_targets = {}
+    if lesion_teacher is not None:
+        if not lesion_only:
+            raise ValueError("A lesion teacher requires the matched lesion-only training recipe.")
+        from .teacher_v03 import load_teacher
+
+        lesion_targets = load_teacher(lesion_teacher, manifest, development)
     if destination.exists() or report.exists():
         raise FileExistsError(f"Checkpoint or training report already exists: {destination}")
     if teachers:
@@ -263,6 +283,8 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
     config = {"manifest_sha256": manifest_hash, "width": width, "patch": list(patch), "seed": seed,
               "input_mode": input_mode, "model_spacing_mm": model_spacing_mm, "boundary_weight": boundary_weight,
               "dual_decoder": dual_decoder, "teachers": teachers, "pairs": str(pairs_path) if pairs_path else None}
+    if lesion_teacher is not None:
+        config["lesion_teacher_sha256"] = hashlib.sha256(lesion_teacher.read_bytes()).hexdigest()
     history = []
     distilled_batches = 0
     supervised = set()
@@ -305,7 +327,7 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
         case = development[int(rng.integers(len(development)))]
         optimizer.zero_grad(set_to_none=True)
         if lesion_only:
-            image, lesion = _lesion_patch(case, rng, patch, foreground)
+            image, lesion, hint = _lesion_patch(case, rng, patch, foreground, lesion_targets.get(case.path))
             x = torch.as_tensor(image[None], device=device)
             y = torch.as_tensor(lesion[None, None], device=device)
             known = torch.ones((1, 1), dtype=torch.bool, device=device)
@@ -313,6 +335,15 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
                 logit = model.lesion(x)
             logit = logit.float()
             loss = segmentation_loss(logit, y, known)
+            if hint is not None:
+                # Keep teacher signal near plausible foreground and preserve the manual supervision.
+                selected = ((lesion > 0) | (hint >= .1)) & (np.abs(hint - lesion) <= .6)
+                if selected.any():
+                    soft = torch.as_tensor(hint[None, None], device=device)
+                    support = torch.as_tensor(selected[None, None], device=device)
+                    soft_loss = F.binary_cross_entropy_with_logits(logit, soft, reduction="none")
+                    loss = loss + .25 * ((soft_loss * support).sum() / support.sum())
+                    distilled_batches += 1
             if boundary_weight and lesion.any() and not lesion.all():
                 distance = torch.as_tensor(_distance_penalty(lesion, model_spacing_mm), device=device)
                 loss = loss + boundary_weight * ((logit.sigmoid() - y).abs() * distance).mean()
@@ -365,7 +396,7 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
             last_save = now
         if reached_budget:
             break
-    if teachers and not distilled_batches:
+    if (teachers or lesion_teacher is not None) and not distilled_batches:
         raise ValueError("Distillation was requested but never sampled an eligible teacher target.")
     destination.parent.mkdir(parents=True, exist_ok=True)
     elapsed = previous_time + time.monotonic() - started
@@ -379,6 +410,8 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
                "loss_first": history[0], "loss_last": history[-1], "parameters": sum(p.numel() for p in model.parameters()),
                "distilled_updates": distilled_batches, "verified_ranking_pairs": len(pairs),
                "supervised_labels": [name for name in REFERENCE_LABELS if name in supervised]}
+    if lesion_teacher is not None:
+        summary["lesion_teacher_sha256"] = config["lesion_teacher_sha256"]
     if use_amp:
         summary["peak_cuda_allocated_mib"] = torch.cuda.max_memory_allocated(device) / 2**20
         summary["accelerator"] = torch.cuda.get_device_name(device)
