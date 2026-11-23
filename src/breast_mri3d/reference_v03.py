@@ -81,7 +81,8 @@ def evaluate(manifest: Path, checkpoint: Path, directory: Path, output: Path, sp
     if expected != {p.name for p in outputs.glob(f"*{FILE_ENDING}")}:
         raise ValueError("Reference prediction outputs differ from the fixed cohort.")
     if not output.is_file():
-        score_nnunet(manifest, outputs, output, split=split, prediction_input=True, ending=FILE_ENDING)
+        score_nnunet(manifest, outputs, output, split=split, prediction_input=True,
+                     ending=FILE_ENDING, prediction_sources=inputs)
 
 
 def main() -> None:

@@ -214,7 +214,7 @@ class Study:
         write_json(self.reports / "v03-completed.json", {"lock_sha256": checksum(self.lock),
                    "completed_cohorts": list(freeze["cohorts"]), "benchmark_submission": "local_preparation_only"})
 
-    def run(self, timeout_seconds: float) -> None:
+    def run(self, timeout_seconds: float, *, historical_replay: bool = True) -> None:
         self.wait_file(self.prepared / "partition-lock.json", timeout_seconds)
         verify_partitions(self.root)
         if self.lock.is_file():
@@ -229,7 +229,8 @@ class Study:
             raise ValueError("False-positive estimates require a reserved set of confirmed negative exams.")
         with ThreadPoolExecutor(max_workers=1) as pool:
             ready = pool.submit(self.reference_plan, PLANS, 5.3)
-            self.wait_file(self.reports / "orientation-pilot.json", timeout_seconds)
+            if historical_replay:
+                self.wait_file(self.reports / "orientation-pilot.json", timeout_seconds)
             patch = self.patch_probe()
             ready.result()
         plans_receipt = self.runs / "reference-plans.json"
@@ -253,13 +254,14 @@ def main() -> None:
     parser.add_argument("root", type=Path)
     parser.add_argument("--trainer-dir", required=True, type=Path)
     parser.add_argument("--wait-hours", type=float, default=8.)
+    parser.add_argument("--skip-historical-replay", action="store_true", help="run an independent replication")
     args = parser.parse_args()
     study = Study(args.root, args.trainer_dir)
     queue = study.runs / "gpu-queue.pid"
     with queue.open("x", encoding="utf-8") as stream:
         stream.write(f"{os.getpid()}\n")
     try:
-        study.run(args.wait_hours * 3600)
+        study.run(args.wait_hours * 3600, historical_replay=not args.skip_historical_replay)
     finally:
         queue.unlink()
 

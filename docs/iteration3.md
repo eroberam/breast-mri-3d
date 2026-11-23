@@ -25,11 +25,13 @@ The historical control preserves the exact voxel sampling through a permutation 
 python -m breast_mri3d.study_v03 "$DATA" --trainer-dir configs/nnunet
 ```
 
+For independent replication with a locally prepared previous cohort, use `--skip-historical-replay` to start from the verified partitions without the laboratory's historical checkpoints.
+
 Run one GPU fit at a time. The program waits for the split receipts and replay, then trains a single-fold ResEncM on the subtraction, with the official augmentation and mirrored inference. The reference uses a 5.3 GB planner target and can replan at 4.2 GB if training exhausts GPU memory. The compact arms share a patch of 48 × 128 × 128 voxels, with 32 × 112 × 112 as the common fallback. They compare three paired DCE channels with suppression of precontrast and postcontrast in the input tensor. The cascade uses a 2.5 mm locator and a 1.5 mm refiner with a distance-weighted loss in millimetres. The detector supplies the evaluation regions.
 
 The initial limit is six hours per arm. Each stage of the cascade receives three. The leading compact arm and the reference continue to a cumulative twelve hours. Adjustment scores select the checkpoint. Compact threshold selection maximizes native mean Dice on the 120 adjustment patients over 0.30, 0.45, 0.60, 0.75 and 0.90. The reference uses its binary argmax. Candidate weights, operating points and input manifests are hashed before held-out scoring.
 
-Native scoring retains zero Dice when a tumor is missed. It reports paired mean Dice and patient bootstrap confidence intervals, median Dice, HD95 on cases with two surfaces, and absolute volume error. Small-lesion sensitivity uses one-to-one matching at IoU ≥ 0.10 and diameter-equivalent volume ≤ 10 mm. Negative-exam false alarms use bilateral ODELIA controls. Local scores and the official blind Task 1 leaderboard estimate different endpoints and populations. [Official benchmark methods and results](https://doi.org/10.1109/TMI.2026.3733343) · [Long-term benchmark](https://www.codabench.org/competitions/7425/)
+Native scoring retains zero Dice when a tumor is missed. It reports paired mean Dice and patient bootstrap confidence intervals, median Dice, HD95 on cases with two surfaces, and absolute volume error. When nnU-Net omits the NIfTI unit, the scorer transfers millimetres from the original model input after matching the shape and affine. Small-lesion sensitivity uses one-to-one matching at IoU ≥ 0.10 and diameter-equivalent volume ≤ 10 mm. Negative-exam false alarms use bilateral ODELIA controls. Local scores and the official blind Task 1 leaderboard estimate different endpoints and populations. [Official benchmark methods and results](https://doi.org/10.1109/TMI.2026.3733343) · [Long-term benchmark](https://www.codabench.org/competitions/7425/)
 
 ## DICOM export
 

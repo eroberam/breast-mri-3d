@@ -94,7 +94,8 @@ def prepare_nnunet_prediction(manifest: Path, destination: Path, *, split: str,
 
 
 def score_nnunet(manifest: Path, predictions: Path, output: Path, *, split: str = "validation",
-                 prediction_input: bool = False, ending: str = ".nii.gz") -> dict:
+                 prediction_input: bool = False, ending: str = ".nii.gz",
+                 prediction_sources: Path | None = None) -> dict:
     if split not in {"validation", "test"} or (split == "test" and not prediction_input):
         raise ValueError("A test score requires images prepared explicitly for prediction.")
     cases = [case for case in read_manifest(manifest)
@@ -108,7 +109,14 @@ def score_nnunet(manifest: Path, predictions: Path, output: Path, *, split: str 
             raise ValueError("The nnU-Net native comparison needs original lesion masks for all validation cases.")
         native = Grid.from_dict(metadata["native_grid"])
         model = Grid.from_dict(metadata["grid"])
-        segmentation, declared_model = read_nifti(predictions / f"BreastMRI_{index:04d}{ending}")
+        key = f"BreastMRI_{index:04d}"
+        source = None
+        if prediction_sources is not None:
+            _, source = read_nifti(prediction_sources / f"{key}_0000{ending}")
+            if source.shape != model.shape or not np.allclose(source.affine, model.affine, atol=.001, rtol=0):
+                raise ValueError("The original nnU-Net input differs from the prepared case geometry.")
+        # NibabelIO writes the source affine and can omit the NIfTI units field.
+        segmentation, declared_model = read_nifti(predictions / f"{key}{ending}", source_grid=source)
         target, declared_native = read_nifti(case.path / "native_labels" / "lesion.nii.gz")
         for values, stated, expected in ((segmentation, declared_model, model), (target, declared_native, native)):
             if (stated.shape != expected.shape or not np.allclose(stated.affine, expected.affine, atol=.001, rtol=0)

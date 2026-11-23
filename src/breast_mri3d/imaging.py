@@ -15,9 +15,11 @@ _RAS_TO_LPS = np.diag([-1, -1, 1, 1])
 _REVERSE_ARRAY_AXES = np.eye(4)[[2, 1, 0, 3]]
 
 
-def read_nifti(path: Path, *, time_index: int | None = None) -> tuple[np.ndarray, Grid]:
+def read_nifti(path: Path, *, time_index: int | None = None,
+               source_grid: Grid | None = None) -> tuple[np.ndarray, Grid]:
     image = nib.load(str(path))
-    if image.header.get_xyzt_units()[0] != "mm":
+    units = image.header.get_xyzt_units()[0]
+    if units != "mm" and (units != "unknown" or source_grid is None):
         raise ValueError(f"NIfTI must define a 3D grid in millimetres: {path.name}")
     if time_index is None and len(image.shape) == 3:
         array = np.asanyarray(image.dataobj)
@@ -29,7 +31,11 @@ def read_nifti(path: Path, *, time_index: int | None = None) -> tuple[np.ndarray
         raise ValueError(f"NIfTI has no declared physical transform: {path.name}")
     data = array.transpose(2, 1, 0)
     affine = _RAS_TO_LPS @ image.affine @ _REVERSE_ARRAY_AXES
-    return data, Grid(data.shape, affine)
+    grid = Grid(data.shape, affine)
+    if source_grid is not None and (grid.shape != source_grid.shape
+                                   or not np.allclose(grid.affine, source_grid.affine, atol=.001, rtol=0)):
+        raise ValueError("The NIfTI does not match the physical coordinates of its verified source image.")
+    return data, grid
 
 
 def write_nifti(path: Path, array: np.ndarray, grid: Grid) -> None:

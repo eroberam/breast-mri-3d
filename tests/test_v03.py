@@ -103,6 +103,24 @@ def test_reference_uses_only_the_subtraction_channel(tmp_path):
     assert np.array_equal(actual.affine, grid.affine)
 
 
+def test_reference_inherits_missing_units_only_from_an_identical_source_grid(tmp_path):
+    import nibabel as nib
+
+    path = tmp_path / "reference.nii"
+    nib.save(nib.Nifti1Image(np.ones((5, 4, 3), dtype=np.uint8), np.eye(4)), path)
+    with pytest.raises(ValueError, match="millimetres"):
+        read_nifti(path)
+    affine = np.diag([-1., -1., 1., 1.])
+    affine[:3, :3] = affine[:3, (2, 1, 0)]
+    source = Grid((3, 4, 5), affine)
+    data, back = read_nifti(path, source_grid=source)
+    assert data.shape == source.shape and np.array_equal(back.affine, source.affine)
+    shifted = affine.copy()
+    shifted[0, 3] = 2
+    with pytest.raises(ValueError, match="verified source"):
+        read_nifti(path, source_grid=Grid(source.shape, shifted))
+
+
 def test_resume_restores_optimizer_and_foreground_sampling(tmp_path):
     torch = pytest.importorskip("torch")
     from breast_mri3d.prepare import _write_case
