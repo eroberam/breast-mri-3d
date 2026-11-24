@@ -56,7 +56,8 @@ def _train(plans: str, hours: float) -> None:
     shutil.copyfile(folder / "budget.json", target.with_suffix(".budget.json"))
 
 
-def evaluate(manifest: Path, checkpoint: Path, directory: Path, output: Path, split: str) -> None:
+def evaluate(manifest: Path, checkpoint: Path, directory: Path, output: Path, split: str, *,
+             component_limit: int | None = None) -> None:
     import torch
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
@@ -82,7 +83,7 @@ def evaluate(manifest: Path, checkpoint: Path, directory: Path, output: Path, sp
         raise ValueError("Reference prediction outputs differ from the fixed cohort.")
     if not output.is_file():
         score_nnunet(manifest, outputs, output, split=split, prediction_input=True,
-                     ending=FILE_ENDING, prediction_sources=inputs)
+                     ending=FILE_ENDING, prediction_sources=inputs, component_limit=component_limit)
 
 
 def main() -> None:
@@ -98,13 +99,15 @@ def main() -> None:
     test.add_argument("directory", type=Path)
     test.add_argument("output", type=Path)
     test.add_argument("--split", choices=("validation", "test"), required=True)
+    test.add_argument("--component-limit", type=int)
     args = parser.parse_args()
     if args.action == "prepare":
         prepare(args.manifest)
     elif args.action == "train":
         train(args.plans, args.hours)
     else:
-        evaluate(args.manifest, args.checkpoint, args.directory, args.output, args.split)
+        evaluate(args.manifest, args.checkpoint, args.directory, args.output, args.split,
+                 component_limit=args.component_limit)
 
 
 if __name__ == "__main__":

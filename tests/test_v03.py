@@ -51,6 +51,19 @@ def test_physical_proposal_margins_and_empty_case():
     assert np.all(stop - center >= 20.)
 
 
+def test_component_retention_preserves_the_two_dominant_candidates():
+    from breast_mri3d.research import keep_largest_components
+
+    model_mask = np.zeros((18, 22, 19), dtype=bool)
+    model_mask[1:5, 1:5, 1:5] = True
+    model_mask[10:13, 10:13, 10:13] = True
+    model_mask[16, 19, 17] = True
+    assert keep_largest_components(model_mask, 1).sum() == 64
+    retained = keep_largest_components(model_mask, 2)
+    assert retained.sum() == 91
+    assert not retained[16, 19, 17]
+
+
 def test_partitions_exclude_cross_release_aliases_and_historical_controls():
     rows = [{"patient": f"ISPY1_{i}", "collection": "ISPY1", "volume_ml": i / 3}
             for i in range(1, 21)]
@@ -153,3 +166,7 @@ def test_resume_restores_optimizer_and_foreground_sampling(tmp_path):
     distilled = train(manifest, tmp_path / "distilled.pt", steps=1, lesion_teacher=teacher, **recipe)
     assert distilled["distilled_updates"] == 1
     assert distilled["lesion_teacher_sha256"] == checksum(teacher)
+    initial = tmp_path / "first.pt"
+    warm = train(manifest, tmp_path / "warm.pt", steps=1, initial_checkpoint=initial, learning_rate=.0001, **recipe)
+    assert warm["updates"] == 1 and warm["initial_checkpoint_sha256"] == checksum(initial)
+    assert warm["learning_rate"] == .0001

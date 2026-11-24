@@ -12,7 +12,8 @@ import numpy as np
 from .geometry import Grid
 from .imaging import read_nifti, write_nifti
 from .labels import LABELS
-from .research import Case, lesion_instances, mask_metrics, match_lesions, read_manifest, summarize_metrics
+from .research import (Case, keep_largest_components, lesion_instances, mask_metrics, match_lesions,
+                       read_manifest, summarize_metrics)
 
 
 CHANNELS = ("precontrast", "early_postcontrast", "enhancement")
@@ -95,7 +96,7 @@ def prepare_nnunet_prediction(manifest: Path, destination: Path, *, split: str,
 
 def score_nnunet(manifest: Path, predictions: Path, output: Path, *, split: str = "validation",
                  prediction_input: bool = False, ending: str = ".nii.gz",
-                 prediction_sources: Path | None = None) -> dict:
+                 prediction_sources: Path | None = None, component_limit: int | None = None) -> dict:
     if split not in {"validation", "test"} or (split == "test" and not prediction_input):
         raise ValueError("A test score requires images prepared explicitly for prediction.")
     cases = [case for case in read_manifest(manifest)
@@ -122,6 +123,8 @@ def score_nnunet(manifest: Path, predictions: Path, output: Path, *, split: str 
             if (stated.shape != expected.shape or not np.allclose(stated.affine, expected.affine, atol=.001, rtol=0)
                     or not np.isin(values, (0, 1)).all()):
                 raise ValueError("The nnU-Net prediction or reference changed its expected geometry or label encoding.")
+        if component_limit is not None:
+            segmentation = keep_largest_components(segmentation, component_limit)
         aligned = model.resample(segmentation.astype(np.uint8), native, order=0)
         provenance = metadata["labels"]["lesion"]
         record = {"patient": case.patient, "cohort": case.cohort, "reference": provenance,

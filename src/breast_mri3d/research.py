@@ -61,6 +61,18 @@ def read_manifest(path: Path) -> list[Case]:
     return cases
 
 
+def keep_largest_components(mask: np.ndarray, limit: int) -> np.ndarray:
+    """Retain the largest 26-connected components on a common physical grid."""
+    if type(limit) is not int or limit < 1:
+        raise ValueError("The connected component limit must be a positive integer.")
+    components, count = ndimage.label(mask, structure=np.ones((3, 3, 3), dtype=bool))
+    if count <= limit:
+        return np.asarray(mask, dtype=bool)
+    volumes = np.bincount(components.ravel())[1:]
+    largest = 1 + np.argsort(-volumes, kind="stable")[:limit]
+    return np.isin(components, largest)
+
+
 def match_lesions(prediction: np.ndarray, reference: np.ndarray, *, iou_threshold: float = .1,
                   grid: Grid | None = None, instances: np.ndarray | None = None) -> dict:
     """Match components one-to-one. False alarms require exhaustive truth or known negatives."""

@@ -81,10 +81,16 @@ def proposal_boxes(probability: np.ndarray, coarse: Grid, fine: Grid) -> list[tu
 
 
 def lesion_probability(model, image: np.ndarray, grid: Grid, patch: tuple[int, ...], device, *,
-                       locator=None, locator_patch: tuple[int, ...] | None = None) -> np.ndarray:
+                       locator=None, locator_patch: tuple[int, ...] | None = None,
+                       mirror_left_right: bool = False) -> np.ndarray:
     from .inference import predict
     from .labels import LABELS
 
+    if mirror_left_right:
+        options = {"locator": locator, "locator_patch": locator_patch}
+        original = lesion_probability(model, image, grid, patch, device, **options)
+        reflected = lesion_probability(model, image[..., ::-1], grid, patch, device, **options)
+        return .5 * (original + reflected[..., ::-1])
     label_indices = (LABELS.index("lesion"),)
     if locator is None:
         return predict(model, image, patch, device, label_indices=label_indices)[0][0]

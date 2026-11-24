@@ -228,11 +228,14 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
           pairs_path: Path | None = None, dual_decoder: bool = True,
           budget_seconds: float | None = None, input_mode: str = "dce",
           model_spacing_mm: float | None = None, boundary_weight: float = 0.,
-          resumable: bool = False, resume_from: Path | None = None, lesion_teacher: Path | None = None) -> dict:
+          resumable: bool = False, resume_from: Path | None = None, lesion_teacher: Path | None = None,
+          initial_checkpoint: Path | None = None, learning_rate: float = 3e-4) -> dict:
     if steps < 1 or len(patch) != 3 or any(n < 8 or n % 8 for n in patch):
         raise ValueError("Training requires positive steps and three patch dimensions divisible by eight.")
     if budget_seconds is not None and (not np.isfinite(budget_seconds) or budget_seconds <= 0):
         raise ValueError("A training time budget must be finite and positive.")
+    if not np.isfinite(learning_rate) or learning_rate <= 0:
+        raise ValueError("The learning rate must be finite and positive.")
     if destination.suffix.lower() not in {".pt", ".pth"}:
         raise ValueError("Use a .pt or .pth filename for the checkpoint.")
     report = destination.with_suffix(".training.json")
@@ -276,7 +279,17 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
     if device.type == "cpu":
         torch.set_num_threads(min(torch.get_num_threads(), 6))
     model = BreastMRI3D(width, dual_decoder=dual_decoder, input_mode=input_mode).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-4)
+    if initial_checkpoint is not None:
+        if resume_from is not None:
+            raise ValueError("Choose either a weight initialization or a continuation with optimizer state.")
+        initialization = torch.load(initial_checkpoint, map_location="cpu", weights_only=True)
+        if (initialization["labels"] != list(LABELS) or initialization["width"] != width
+                or initialization["dual_decoder"] != dual_decoder
+                or initialization.get("input_mode", "dce") != input_mode
+                or initialization["summary"].get("model_spacing_mm") != model_spacing_mm):
+            raise ValueError("The initialization does not match this architecture and input geometry.")
+        model.load_state_dict(initialization["state_dict"], strict=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     resume_file = destination.with_suffix(".resume.pt")
     manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
@@ -285,6 +298,10 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
               "dual_decoder": dual_decoder, "teachers": teachers, "pairs": str(pairs_path) if pairs_path else None}
     if lesion_teacher is not None:
         config["lesion_teacher_sha256"] = hashlib.sha256(lesion_teacher.read_bytes()).hexdigest()
+    if initial_checkpoint is not None:
+        config["initial_checkpoint_sha256"] = hashlib.sha256(initial_checkpoint.read_bytes()).hexdigest()
+    if learning_rate != 3e-4:
+        config["learning_rate"] = learning_rate
     history = []
     distilled_batches = 0
     supervised = set()
@@ -412,6 +429,10 @@ def train(manifest: Path, destination: Path, *, steps: int, width: int,
                "supervised_labels": [name for name in REFERENCE_LABELS if name in supervised]}
     if lesion_teacher is not None:
         summary["lesion_teacher_sha256"] = config["lesion_teacher_sha256"]
+    if initial_checkpoint is not None:
+        summary["initial_checkpoint_sha256"] = config["initial_checkpoint_sha256"]
+    if learning_rate != 3e-4:
+        summary["learning_rate"] = learning_rate
     if use_amp:
         summary["peak_cuda_allocated_mib"] = torch.cuda.max_memory_allocated(device) / 2**20
         summary["accelerator"] = torch.cuda.get_device_name(device)

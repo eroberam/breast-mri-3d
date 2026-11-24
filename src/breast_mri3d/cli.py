@@ -55,7 +55,7 @@ def _parser() -> argparse.ArgumentParser:
     pairs.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     pairs.add_argument("--patch", type=int, nargs=3, default=(32, 128, 128))
     pairs.add_argument("--out", required=True, type=Path)
-    fit = commands.add_parser("train", help="train the compact residual network from scratch")
+    fit = commands.add_parser("train", help="fit the compact residual network")
     fit.add_argument("manifest", type=Path)
     fit.add_argument("--out", required=True, type=Path)
     fit.add_argument("--steps", type=int, default=100)
@@ -73,6 +73,8 @@ def _parser() -> argparse.ArgumentParser:
     fit.add_argument("--resumable", action="store_true")
     fit.add_argument("--resume-from", type=Path)
     fit.add_argument("--lesion-teacher", type=Path, help="verified v0.3 calibration and training-only probability receipt")
+    fit.add_argument("--initial-checkpoint", type=Path, help="initialize weights and start a new optimizer")
+    fit.add_argument("--learning-rate", type=float, default=3e-4)
     score = commands.add_parser("evaluate", help="evaluate a trained checkpoint on a requested split")
     score.add_argument("manifest", type=Path)
     score.add_argument("checkpoint", type=Path)
@@ -100,6 +102,8 @@ def _parser() -> argparse.ArgumentParser:
     segment.add_argument("--rank-threshold", type=float)
     segment.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     segment.add_argument("--patch", type=int, nargs=3)
+    segment.add_argument("--mirror-left-right", action="store_true")
+    segment.add_argument("--component-limit", type=int)
     demo = commands.add_parser("demo", help="generate a synthetic verified DICOM-to-print example")
     demo.add_argument("--out", required=True, type=Path)
     return p
@@ -188,6 +192,7 @@ def _segment(args: argparse.Namespace) -> None:
     from .geometry import lps_grid, model_grid
     from .imaging import prepare_dce
     from .inference import binary_masks, open_model, predict
+    from .research import keep_largest_components
 
     import numpy as np
 
@@ -201,12 +206,15 @@ def _segment(args: argparse.Namespace) -> None:
     grid = lps_grid(post.grid, spacing) if spacing is not None else model_grid(post.grid)
     aligned = prepare_dce(pre, post)
     inputs = np.stack([post.grid.resample(x, grid, order=1) for x in aligned])
+    if spacing is not None:
+        inputs = inputs.astype(np.float16)
     if args.rank_threshold is not None and not summary["verified_ranking_pairs"]:
         raise ValueError("The requested checkpoint was not trained with verified ranking pairs.")
     labels = summary["supervised_labels"]
     patch = tuple(args.patch or (summary["patch_zyx"] if spacing is not None else (32, 128, 128)))
-    if args.locator is not None and (labels != ["lesion"] or spacing is None):
-        raise ValueError("The coarse locator requires a v0.3 lesion checkpoint.")
+    edited_prediction = args.locator is not None or args.mirror_left_right or args.component_limit is not None
+    if edited_prediction and (labels != ["lesion"] or spacing is None):
+        raise ValueError("The lesion inference settings require a checkpoint fitted in a fixed patient grid.")
     if spacing is not None and labels == ["lesion"]:
         locator, locator_info = open_model(args.locator, device) if args.locator else (None, {})
         if locator is not None and locator_info.get("model_spacing_mm") != COARSE_SPACING_MM:
@@ -214,8 +222,12 @@ def _segment(args: argparse.Namespace) -> None:
         if not 0 < args.threshold < 1:
             raise ValueError("A probability threshold must lie in (0, 1).")
         prob = lesion_probability(model, inputs, grid, patch, device, locator=locator,
-                                  locator_patch=tuple(locator_info["patch_zyx"]) if locator is not None else None)
-        mask = {"lesion": prob >= args.threshold}
+                                  locator_patch=tuple(locator_info["patch_zyx"]) if locator is not None else None,
+                                  mirror_left_right=args.mirror_left_right)
+        lesion = prob >= args.threshold
+        if args.component_limit is not None:
+            lesion = keep_largest_components(lesion, args.component_limit)
+        mask = {"lesion": lesion}
     else:
         probs, rank = predict(model, inputs, patch, device, ranking=args.rank_threshold is not None)
         mask = binary_masks(probs, labels, args.threshold, ranking=rank, rank_threshold=args.rank_threshold)
@@ -223,6 +235,7 @@ def _segment(args: argparse.Namespace) -> None:
         "type": "research_model", "checkpoint_sha256": hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),
         "locator_sha256": hashlib.sha256(args.locator.read_bytes()).hexdigest() if args.locator else None,
         "threshold": args.threshold, "rank_threshold": args.rank_threshold,
+        "patch_zyx": list(patch), "mirror_left_right": args.mirror_left_right, "component_limit": args.component_limit,
         "series_instance_uid": post.uid, "frame_of_reference_uid": post.frame_uid,
         "precontrast_series_uid": pre.uid, "source_instances_sha256": post.source_instances_sha256,
         "precontrast_instances_sha256": pre.source_instances_sha256,
@@ -292,7 +305,8 @@ def main() -> None:
                                dual_decoder=not args.shared_decoder, input_mode=args.input_mode,
                                model_spacing_mm=args.model_spacing_mm, boundary_weight=args.boundary_weight,
                                resumable=args.resumable, resume_from=args.resume_from,
-                               lesion_teacher=args.lesion_teacher), indent=2))
+                               lesion_teacher=args.lesion_teacher, initial_checkpoint=args.initial_checkpoint,
+                               learning_rate=args.learning_rate), indent=2))
     elif args.command == "evaluate":
         from .inference import evaluate
 

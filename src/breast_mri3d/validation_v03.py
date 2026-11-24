@@ -14,7 +14,8 @@ from .acquire import checksum, write_json
 from .cohorts_v03 import patient_key
 from .geometry import Grid
 from .imaging import read_nifti
-from .research import Case, lesion_instances, mask_metrics, match_lesions, read_manifest, summarize_metrics
+from .research import (Case, keep_largest_components, lesion_instances, mask_metrics, match_lesions,
+                       read_manifest, summarize_metrics)
 
 
 THRESHOLDS = (.30, .45, .60, .75, .90)
@@ -43,7 +44,9 @@ def native_score(case: Case, predicted: np.ndarray, target: np.ndarray, grid: Gr
 
 
 def score_compact(manifest: Path, checkpoint: Path, output: Path, *, split: str,
-                  threshold: float | None, locator: Path | None = None, device_name: str = "cuda") -> dict:
+                  threshold: float | None, locator: Path | None = None, device_name: str = "cuda",
+                  patch_override: tuple[int, ...] | None = None, mirror_left_right: bool = False,
+                  component_limit: int | None = None) -> dict:
     import torch
 
     from .cascade import COARSE_SPACING_MM, lesion_probability
@@ -51,10 +54,15 @@ def score_compact(manifest: Path, checkpoint: Path, output: Path, *, split: str,
 
     if threshold is None and split != "validation":
         raise ValueError("Threshold selection is restricted to the adjustment split.")
+    if threshold is None and component_limit is not None:
+        raise ValueError("Threshold selection with component filtering requires an adjustment policy sweep.")
     if threshold is not None and not 0 < threshold < 1:
         raise ValueError("Provide a probability threshold strictly inside (0, 1).")
     identity = {"manifest_sha256": checksum(manifest), "checkpoint_sha256": checksum(checkpoint),
                 "locator_sha256": checksum(locator) if locator else None, "split": split, "threshold": threshold}
+    if patch_override or mirror_left_right or component_limit is not None:
+        identity.update(patch_override=list(patch_override) if patch_override is not None else None,
+                        mirror_left_right=mirror_left_right, component_limit=component_limit)
     cases = [case for case in read_manifest(manifest) if case.split == split]
     if not cases:
         raise ValueError("No eligible patients in the requested split.")
@@ -77,7 +85,7 @@ def score_compact(manifest: Path, checkpoint: Path, output: Path, *, split: str,
     coarse, details = open_model(locator, device) if locator else (None, {})
     if coarse is not None and details["model_spacing_mm"] != COARSE_SPACING_MM:
         raise ValueError("The locator was fitted on a different physical grid.")
-    patch = tuple(summary["patch_zyx"])
+    patch = patch_override if patch_override is not None else tuple(summary["patch_zyx"])
     for index, case in enumerate(cases[len(rows):], len(rows) + 1):
         target, native = native_reference(case)
         image = np.load(case.path / "image.npy", mmap_mode="r", allow_pickle=False)
@@ -85,9 +93,10 @@ def score_compact(manifest: Path, checkpoint: Path, output: Path, *, split: str,
         if not np.allclose(model_grid.spacing, summary["model_spacing_mm"]):
             raise ValueError("Inference input spacing differs from the frozen training spacing.")
         prob = lesion_probability(model, image, model_grid, patch, device, locator=coarse,
-                                  locator_patch=tuple(details["patch_zyx"]) if coarse is not None else None)
-        aligned = model_grid.resample(prob, native, order=0)
+                                  locator_patch=tuple(details["patch_zyx"]) if coarse is not None else None,
+                                  mirror_left_right=mirror_left_right)
         if threshold is None:
+            aligned = model_grid.resample(prob, native, order=0)
             truth_volume = np.count_nonzero(target)
             scores = []
             for cutoff in THRESHOLDS:
@@ -96,7 +105,11 @@ def score_compact(manifest: Path, checkpoint: Path, output: Path, *, split: str,
                 scores.append(float(2 * np.count_nonzero(prediction & target) / denom) if denom else 1.)
             row = {"patient": case.patient, "cohort": case.cohort, "dice_by_threshold": scores}
         else:
-            row = native_score(case, aligned >= threshold, target, native)
+            mask = prob >= threshold
+            if component_limit is not None:
+                mask = keep_largest_components(mask, component_limit)
+            aligned = model_grid.resample(mask.astype(np.uint8), native, order=0).astype(bool)
+            row = native_score(case, aligned, target, native)
         rows.append(row)
         if index % 8 == 0 or index == len(cases):
             write_json(partial, {"inputs": identity, "records": rows,
@@ -191,9 +204,14 @@ def main() -> None:
     parser.add_argument("--threshold", type=float)
     parser.add_argument("--locator", type=Path)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
+    parser.add_argument("--patch", type=int, nargs=3)
+    parser.add_argument("--mirror-left-right", action="store_true")
+    parser.add_argument("--component-limit", type=int)
     args = parser.parse_args()
     score_compact(args.manifest, args.checkpoint, args.out, split=args.split, threshold=args.threshold,
-                  locator=args.locator, device_name=args.device)
+                  locator=args.locator, device_name=args.device,
+                  patch_override=tuple(args.patch) if args.patch else None, mirror_left_right=args.mirror_left_right,
+                  component_limit=args.component_limit)
 
 
 if __name__ == "__main__":

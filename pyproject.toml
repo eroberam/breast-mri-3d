@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "breast-mri-3d"
-version = "0.3.0"
+version = "0.3.1"
 description = "Research pipeline for volumetric breast MRI segmentation and geometry-checked export"
 readme = "README.md"
 requires-python = ">=3.10"
